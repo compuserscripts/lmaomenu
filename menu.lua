@@ -46,6 +46,13 @@ local menu = {
     }
 }
 
+-- Helper function to set colors
+local function setColor(color)
+    if type(color) == "table" and #color >= 4 then
+        draw.Color(color[1], color[2], color[3], color[4])
+    end
+end
+
 -- Window class
 local Window = {}
 Window.__index = Window
@@ -83,7 +90,9 @@ function Window.new(title, config)
 end
 
 function Window:addItem(item)
-    table.insert(self.items, item)
+    if type(item) == "table" then
+        table.insert(self.items, item)
+    end
 end
 
 function Window:clearItems()
@@ -168,7 +177,7 @@ function Window:_isPointInFooter(x, y)
 end
 
 function Window:_isPointInScrollbar(x, y)
-    local hasScrollbar = #self.items > self:_getVisibleItemCount()
+    local hasScrollbar = self.items and #self.items > self:_getVisibleItemCount()
     if not hasScrollbar then return false end
     
     return x >= self.x + self.width - 16 and x <= self.x + self.width and
@@ -202,11 +211,11 @@ end
 
 function Window:_drawTitleBar()
     -- Background
-    draw.Color(unpack(menu.colors.titleBarBg))
+    setColor(menu.colors.titleBarBg)
     draw.FilledRect(self.x, self.y, self.x + self.width, self.y + self.titleBarHeight)
     
     -- Title
-    draw.Color(unpack(menu.colors.titleText))
+    setColor(menu.colors.titleText)
     draw.Text(self.x + 10, self.y + 8, self.title)
     
     -- Close button
@@ -218,9 +227,9 @@ function Window:_drawTitleBar()
     if self:_isPointInWindow(input.GetMousePos()) and 
        self.interactionState ~= 'dragging' and 
        self.interactionState ~= 'scrolling' then
-        draw.Color(unpack(menu.colors.closeHover))
+        setColor(menu.colors.closeHover)
     else
-        draw.Color(unpack(menu.colors.close))
+        setColor(menu.colors.close)
     end
     draw.Text(closeX, closeY, closeText)
 end
@@ -238,17 +247,19 @@ function Window:_drawItems()
             
             -- Background
             if self:_isPointInItemBounds(itemIndex) then
-                draw.Color(unpack(menu.colors.itemHoverBg))
+                setColor(menu.colors.itemHoverBg)
             else
-                draw.Color(unpack(menu.colors.itemBg))
+                setColor(menu.colors.itemBg)
             end
             draw.FilledRect(self.x + 1, itemY, 
                           self.x + self.width - (hasScrollbar and 16 or 0) - 1, 
                           itemY + self.itemHeight - 1)
             
             -- Text
-            draw.Color(unpack(menu.colors.titleText))
-            draw.Text(self.x + 10, itemY + 5, item.text)
+            setColor(menu.colors.titleText)
+            if type(item) == "table" and type(item.text) == "string" then
+                draw.Text(self.x + 10, itemY + 5, item.text)
+            end
         end
     end
 end
@@ -256,7 +267,7 @@ end
 function Window:_isPointInItemBounds(itemIndex)
     local mouseX, mouseY = input.GetMousePos()
     local itemY = self.y + self.titleBarHeight + ((itemIndex - self.scrollOffset - 1) * self.itemHeight)
-    local hasScrollbar = #self.items > self:_getVisibleItemCount()
+    local hasScrollbar = self.items and #self.items > self:_getVisibleItemCount()
     
     return mouseX >= self.x and 
            mouseX <= self.x + self.width - (hasScrollbar and 16 or 0) and
@@ -265,7 +276,7 @@ function Window:_isPointInItemBounds(itemIndex)
 end
 
 function Window:_drawScrollbar()
-    if #self.items <= self:_getVisibleItemCount() then return end
+    if not self.items or #self.items <= self:_getVisibleItemCount() then return end
     
     local contentHeight = self.height - self.titleBarHeight - self.footerHeight
     local scrollbarWidth = 16
@@ -274,7 +285,7 @@ function Window:_drawScrollbar()
                          (contentHeight - thumbHeight)
     
     -- Draw track
-    draw.Color(unpack(menu.colors.scrollbarBg))
+    setColor(menu.colors.scrollbarBg)
     draw.FilledRect(
         self.x + self.width - scrollbarWidth,
         self.y + self.titleBarHeight,
@@ -284,11 +295,11 @@ function Window:_drawScrollbar()
     
     -- Draw thumb
     if menu._state.mouseState.isDraggingScrollbar then
-        draw.Color(unpack(menu.colors.scrollbarThumbActive))
+        setColor(menu.colors.scrollbarThumbActive)
     elseif self:_isPointInScrollbar(input.GetMousePos()) then
-        draw.Color(unpack(menu.colors.scrollbarThumbHover))
+        setColor(menu.colors.scrollbarThumbHover)
     else
-        draw.Color(unpack(menu.colors.scrollbarThumb))
+        setColor(menu.colors.scrollbarThumb)
     end
     
     draw.FilledRect(
@@ -309,11 +320,11 @@ function Window:render()
     self:_handleDragging()
     
     -- Draw window frame
-    draw.Color(unpack(menu.colors.border))
+    setColor(menu.colors.border)
     draw.OutlinedRect(self.x - 1, self.y - 1, self.x + self.width + 1, self.y + self.height + 1)
     
     -- Draw window background
-    draw.Color(unpack(menu.colors.windowBg))
+    setColor(menu.colors.windowBg)
     draw.FilledRect(self.x, self.y, self.x + self.width, self.y + self.height)
     
     -- Draw components
