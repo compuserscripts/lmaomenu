@@ -3,33 +3,34 @@
     Based on Config Browser by n0x
 ]]
 
--- Menu library main table
 local menu = {
     -- Constants
     SCROLL_DELAY = 0.08,
     CHECK_INTERVAL = 5,
 
-    -- Private state
-    _state = {
-        windows = {},  -- Table to hold all window instances
-        mouseState = {
-            lastState = false,
-            released = false,
-            isDragging = false,
-            dragOffsetX = 0,
-            dragOffsetY = 0,
-            isDraggingScrollbar = false,
-            wasScrollbarDragging = false,
-            hasSeenMousePress = false,
-            lastKeyState = false,
-            lastScrollTime = 0
-        },
-        menuFont = nil,
-        lastFontSetting = nil,
-        originalScaleFactor = client.GetConVar("vgui_ui_scale_factor"),
+    -- Global mouse state (crucial for proper interaction)
+    _mouseState = {
+        lastState = false,
+        released = false,
+        isDragging = false,
+        dragOffsetX = 0,
+        dragOffsetY = 0,
+        isDraggingScrollbar = false,
+        wasScrollbarDragging = false,
+        hasSeenMousePress = false,
+        lastScrollTime = 0
     },
 
-    -- Colors
+    -- Global menu state
+    _state = {
+        windows = {},
+        activeWindow = nil,
+        menuFont = nil,
+        lastFontSetting = nil,
+        wasConsoleOpen = false
+    },
+
+    -- Theme colors
     colors = {
         windowBg = {20, 20, 20, 255},
         titleBarBg = {30, 30, 30, 255},
@@ -37,28 +38,65 @@ local menu = {
         border = {50, 50, 50, 255},
         itemBg = {25, 25, 25, 255},
         itemHoverBg = {40, 40, 40, 255},
+        close = {255, 255, 255, 255},
+        closeHover = {255, 100, 100, 255},
         scrollbarBg = {40, 40, 40, 255},
         scrollbarHoverBg = {50, 50, 50, 255},
         scrollbarThumb = {80, 80, 80, 255},
         scrollbarThumbHover = {100, 100, 100, 255},
-        scrollbarThumbActive = {120, 120, 120, 255},
-        close = {255, 255, 255, 255},
-        closeHover = {255, 100, 100, 255}
+        scrollbarThumbActive = {120, 120, 120, 255}
     }
 }
 
 -- Helper functions
+local function getMousePos()
+    local mousePos = input.GetMousePos()
+    return tonumber(mousePos[1]) or 0, tonumber(mousePos[2]) or 0
+end
+
 local function setColor(color)
     if type(color) == "table" and #color >= 4 then
         draw.Color(color[1], color[2], color[3], color[4])
     end
 end
 
-local function getMousePosition()
-    local mousePosX, mousePosY = input.GetMousePos()
-    mousePosX = tonumber(mousePosX) or 0
-    mousePosY = tonumber(mousePosY) or 0
-    return mousePosX, mousePosY
+local function isInBounds(pX, pY, pX2, pY2)
+    local mX, mY = getMousePos()
+    return (mX >= pX and mX <= pX2 and mY >= pY and mY <= pY2)
+end
+
+local function truncateText(text, maxWidth, hasScrollbar, isHovered, extraText)
+    local padding = 20 -- 10px padding on each side
+    local scrollbarWidth = hasScrollbar and 16 or 0
+    local actualMaxWidth = maxWidth - padding - scrollbarWidth
+    
+    if isHovered and extraText then
+        local extraWidth = draw.GetTextSize(extraText)
+        actualMaxWidth = actualMaxWidth - extraWidth
+    end
+    
+    local fullWidth = draw.GetTextSize(text)
+    if fullWidth <= actualMaxWidth then
+        return text
+    end
+    
+    -- Binary search for truncation point
+    local left, right = 1, #text
+    while left <= right do
+        local mid = math.floor((left + right) / 2)
+        local truncated = text:sub(1, mid) .. "..."
+        local width = draw.GetTextSize(truncated)
+        
+        if width == actualMaxWidth then
+            return truncated
+        elseif width < actualMaxWidth then
+            left = mid + 1
+        else
+            right = mid - 1
+        end
+    end
+    
+    return text:sub(1, right) .. "..."
 end
 
 -- Window class
@@ -68,14 +106,12 @@ Window.__index = Window
 function Window.new(title, config)
     local self = setmetatable({}, Window)
     
-    -- Window properties with defaults
-    self.title = tostring(title or "Window")
+    -- Window properties
+    self.title = title or "Window"
     self.x = tonumber(config.x) or 100
     self.y = tonumber(config.y) or 100
     self.width = tonumber(config.width) or 400
-    self.height = tonumber(config.height) or 300
-    self.minWidth = tonumber(config.minWidth) or 200
-    self.minHeight = tonumber(config.minHeight) or 100
+    self.desiredItems = tonumber(config.desiredItems) or 10
     self.titleBarHeight = tonumber(config.titleBarHeight) or 30
     self.itemHeight = tonumber(config.itemHeight) or 25
     self.footerHeight = tonumber(config.footerHeight) or 30
@@ -84,380 +120,417 @@ function Window.new(title, config)
     self.isOpen = false
     self.items = {}
     self.scrollOffset = 0
-    self.interactionState = 'none'
-    self.clickStartRegion = nil
-    self.clickStartedInMenu = false
+    self.interactionState = 'none'  -- none, dragging, scrolling, clicking
+    self.clickStartedInWindow = false
     self.clickStartedInTitleBar = false
     self.clickStartedInScrollbar = false
-    self.visibleItemCount = 0
-
+    self.clickStartRegion = nil
+    self.clickStartX = 0
+    self.clickStartY = 0
+    
+    -- Content
+    self.height = self:calculateHeight()
+    
     -- Callbacks
-    self.onClose = type(config.onClose) == "function" and config.onClose or nil
-    self.onItemClick = type(config.onItemClick) == "function" and config.onItemClick or nil
+    self.onClose = config.onClose
+    self.onItemClick = config.onItemClick
+    
+    -- Add to global window list
+    table.insert(menu._state.windows, self)
     
     return self
+end
+
+function Window:calculateHeight()
+    local actualItems = math.min(self.desiredItems, #self.items)
+    actualItems = math.max(actualItems, 1) -- Show at least one row
+    return self.titleBarHeight + (actualItems * self.itemHeight) + self.footerHeight
 end
 
 function Window:addItem(item)
     if type(item) == "table" then
         table.insert(self.items, item)
+        self.height = self:calculateHeight()
     end
 end
 
 function Window:clearItems()
     self.items = {}
     self.scrollOffset = 0
-end
-
-function Window:_isPointInRegion(x, y, left, top, right, bottom)
-    if type(x) ~= "number" or type(y) ~= "number" then return false end
-    if type(left) ~= "number" or type(top) ~= "number" or 
-       type(right) ~= "number" or type(bottom) ~= "number" then return false end
-       
-    return x >= left and x <= right and y >= top and y <= bottom
-end
-
-function Window:_isPointInWindow(x, y)
-    return self:_isPointInRegion(x, y, self.x, self.y, self.x + self.width, self.y + self.height)
-end
-
-function Window:_isPointInTitleBar(x, y)
-    return self:_isPointInRegion(x, y, self.x, self.y, self.x + self.width, self.y + self.titleBarHeight)
-end
-
-function Window:_isPointInFooter(x, y)
-    return self:_isPointInRegion(x, y, self.x, self.y + self.height - self.footerHeight, 
-                                self.x + self.width, self.y + self.height)
-end
-
-function Window:_isPointInScrollbar(x, y)
-    if not self.items or type(self.items) ~= "table" then return false end
-    
-    local visItemCount = self:_getVisibleItemCount()
-    if visItemCount >= #self.items then return false end
-    
-    return self:_isPointInRegion(x, y, self.x + self.width - 16, self.y + self.titleBarHeight,
-                                self.x + self.width, self.y + self.height - self.footerHeight)
-end
-
-function Window:_isPointInItemBounds(itemIndex)
-    local mouseX, mouseY = input.GetMousePos()
-    if type(mouseX) ~= "number" or type(mouseY) ~= "number" then return false end
-    if type(itemIndex) ~= "number" then return false end
-
-    -- Calculate item position
-    local itemStartY = self.y + self.titleBarHeight + ((itemIndex - self.scrollOffset - 1) * self.itemHeight)
-    local itemEndY = itemStartY + self.itemHeight
-
-    local visItemCount = self:_getVisibleItemCount()
-    local hasScrollbar = self.items and type(self.items) == "table" and #self.items > visItemCount
-    
-    -- Check if point is within item bounds
-    return mouseX >= self.x and 
-           mouseX <= self.x + self.width - (hasScrollbar and 16 or 0) and
-           mouseY >= itemStartY and 
-           mouseY < itemEndY
-end
-
-function Window:_getVisibleItemCount()
-    local contentHeight = self.height - self.titleBarHeight - self.footerHeight
-    self.visibleItemCount = math.floor(contentHeight / self.itemHeight)
-    return self.visibleItemCount
+    self.height = self:calculateHeight()
 end
 
 function Window:_updateMouseState()
     local mouseState = input.IsButtonDown(MOUSE_LEFT)
     
     -- Handle new click
-    if mouseState and not menu._state.mouseState.lastState then
-        menu._state.mouseState.hasSeenMousePress = true
+    if mouseState and not menu._mouseState.lastState then
+        menu._mouseState.hasSeenPress = true
         
         -- Reset all states on new click
-        self.clickStartedInMenu = false
+        self.clickStartedInWindow = false
         self.clickStartedInTitleBar = false
         self.clickStartedInScrollbar = false
         self.interactionState = 'none'
         
-        local mouseX, mouseY = input.GetMousePos()
-        self.clickStartX = mouseX
-        self.clickStartY = mouseY
+        local mX, mY = getMousePos()
+        self.clickStartX = mX
+        self.clickStartY = mY
         
-        -- Check if click started in menu
-        if self:_isPointInWindow(mouseX, mouseY) then
-            self.clickStartedInMenu = true
+        -- Check if click started in window
+        if isInBounds(self.x, self.y, self.x + self.width, self.y + self.height) then
+            self.clickStartedInWindow = true
+            menu._state.activeWindow = self
             
             -- Track where click started
-            if self:_isPointInTitleBar(mouseX, mouseY) then
+            if isInBounds(self.x, self.y, self.x + self.width, self.y + self.titleBarHeight) then
                 self.clickStartedInTitleBar = true
                 self.interactionState = 'dragging'
                 self.clickStartRegion = 'titlebar'
-            elseif self:_isPointInFooter(mouseX, mouseY) then
+                menu._mouseState.dragOffsetX = mX - self.x
+                menu._mouseState.dragOffsetY = mY - self.y
+            elseif isInBounds(self.x, self.y + self.height - self.footerHeight, 
+                            self.x + self.width, self.y + self.height) then
                 self.clickStartRegion = 'footer'
-            elseif self:_isPointInScrollbar(mouseX, mouseY) then
+            elseif #self.items > 0 and isInBounds(
+                self.x + self.width - 16,
+                self.y + self.titleBarHeight,
+                self.x + self.width,
+                self.y + self.height - self.footerHeight
+            ) then
                 self.clickStartedInScrollbar = true
-                menu._state.mouseState.isDraggingScrollbar = true
                 self.interactionState = 'scrolling'
                 self.clickStartRegion = 'scrollbar'
+                menu._mouseState.isDraggingScrollbar = true
             else
-                -- Check for item click
-                local relativeY = mouseY - (self.y + self.titleBarHeight)
-                local clickedIndex = math.floor(relativeY / self.itemHeight) + self.scrollOffset + 1
-                
-                if clickedIndex > 0 and clickedIndex <= #self.items then
-                    self.interactionState = 'clicking'
-                    self.clickStartRegion = 'list'
-                    self.clickedItemIndex = clickedIndex
-                end
+                self.interactionState = 'clicking'
+                self.clickStartRegion = 'content'
             end
         end
     end
     
     -- Update release state
-    menu._state.mouseState.released = (menu._state.mouseState.lastState and not mouseState)
-    menu._state.mouseState.lastState = mouseState
+    menu._mouseState.released = (menu._mouseState.lastState and not mouseState)
+    menu._mouseState.lastState = mouseState
     
-    -- Handle mouse release
-    if menu._state.mouseState.released then
-        -- Handle item click
-        if self.interactionState == 'clicking' and self.clickedItemIndex and
-           self.onItemClick and self:_isPointInItemBounds(self.clickedItemIndex) then
-            self.onItemClick(self.clickedItemIndex)
-        end
-
-        -- Reset states
-        if menu._state.mouseState.isDraggingScrollbar then
-            menu._state.mouseState.wasScrollbarDragging = false
-            menu._state.mouseState.isDraggingScrollbar = false
+    -- Reset states on release
+    if menu._mouseState.released then
+        if menu._mouseState.isDraggingScrollbar then
+            menu._mouseState.wasScrollbarDragging = false
+            menu._mouseState.isDraggingScrollbar = false
+            self.interactionState = 'none'
+            self.clickStartRegion = nil
+            return true
         end
         
-        menu._state.mouseState.isDragging = false
+        -- Important: Reset interaction state when releasing mouse
+        menu._mouseState.isDragging = false
         self.clickStartedInTitleBar = false
         self.interactionState = 'none'
         self.clickStartRegion = nil
-        self.clickedItemIndex = nil
+        menu._state.activeWindow = nil
     end
-end
-
-function Window:_handleDragging()
-    if menu._state.mouseState.isDragging then
-        if input.IsButtonDown(MOUSE_LEFT) and self.clickStartedInTitleBar then
-            local mousePosX, mousePosY = getMousePosition()
-            self.x = mousePosX - menu._state.mouseState.dragOffsetX
-            self.y = mousePosY - menu._state.mouseState.dragOffsetY
-        else
-            menu._state.mouseState.isDragging = false
-            self.interactionState = 'none'
-            self.clickStartedInTitleBar = false
-        end
-    elseif self.clickStartedInTitleBar and not menu._state.mouseState.isDragging and 
-           input.IsButtonDown(MOUSE_LEFT) then
-        local mousePosX, mousePosY = getMousePosition()
-        menu._state.mouseState.dragOffsetX = mousePosX - self.x
-        menu._state.mouseState.dragOffsetY = mousePosY - self.y
-        menu._state.mouseState.isDragging = true
-        self.interactionState = 'dragging'
-    end
-end
-
-function Window:_handleScrolling()
-    if menu._state.mouseState.isDraggingScrollbar then
-        local _, mousePosY = getMousePosition()
-        local visibleItems = self:_getVisibleItemCount()
-        local maxScroll = #self.items - visibleItems
-        
-        if maxScroll > 0 then
-            local contentHeight = self.height - self.titleBarHeight - self.footerHeight
-            local relativeY = math.max(0, math.min(contentHeight, mousePosY - (self.y + self.titleBarHeight)))
-            local scrollProgress = relativeY / contentHeight
-            self.scrollOffset = math.floor(scrollProgress * maxScroll + 0.5)
-        end
-    end
-end
-
-function Window:_drawTitleBar()
-    -- Background
-    setColor(menu.colors.titleBarBg)
-    draw.FilledRect(self.x, self.y, self.x + self.width, self.y + self.titleBarHeight)
     
-    -- Title
-    setColor(menu.colors.titleText)
-    draw.Text(self.x + 10, self.y + 8, self.title)
-    
-    -- Close button
+    return false
+end
+
+function Window:_handleCloseButton()
     local closeText = "×"
     local closeWidth = draw.GetTextSize(closeText)
     local closeX = self.x + self.width - closeWidth - 10
     local closeY = self.y + 8
-    
-    local mousePosX, mousePosY = getMousePosition()
-    if self:_isPointInRegion(mousePosX, mousePosY, closeX - 5, closeY - 5, 
-                            closeX + closeWidth + 5, closeY + closeWidth + 5) and
-       self.interactionState ~= 'dragging' and 
-       self.interactionState ~= 'scrolling' then
+    local closeButtonBounds = isInBounds(closeX - 5, closeY - 5, closeX + closeWidth + 5, closeY + 15)
+
+    if closeButtonBounds and self.interactionState ~= 'dragging' then
         setColor(menu.colors.closeHover)
-        
-        -- Handle close button click
-        if input.IsButtonPressed(MOUSE_LEFT) then
+        if menu._mouseState.released and self.clickStartedInWindow and 
+           (self.clickStartRegion == 'titlebar' or self.clickStartRegion == nil) then
             self.isOpen = false
             if self.onClose then self.onClose() end
+            return true
         end
     else
         setColor(menu.colors.close)
     end
     draw.Text(closeX, closeY, closeText)
+    return false
 end
 
-function Window:_drawItems()
-    if not self.items or type(self.items) ~= "table" then return end
+function Window:render()
+    if not self.isOpen then return end
     
-    local visibleItems = self:_getVisibleItemCount()
-    local contentStart = self.y + self.titleBarHeight
+    -- Update window height based on content
+    self.height = self:calculateHeight()
     
+    -- Update mouse state and check if we should skip processing
+    local skipProcessing = self:_updateMouseState()
+    if skipProcessing then return end
+
+    -- Handle dragging
+    if menu._mouseState.isDragging then
+        if input.IsButtonDown(MOUSE_LEFT) and self.clickStartedInTitleBar then
+            local mouseX, mouseY = getMousePos()
+            self.x = mouseX - menu._mouseState.dragOffsetX
+            self.y = mouseY - menu._mouseState.dragOffsetY
+        else
+            menu._mouseState.isDragging = false
+            self.interactionState = 'none'
+            self.clickStartedInTitleBar = false
+        end
+    elseif self.clickStartedInTitleBar and not menu._mouseState.isDragging and 
+           input.IsButtonDown(MOUSE_LEFT) then
+        local mouseX, mouseY = getMousePos()
+        menu._mouseState.dragOffsetX = mouseX - self.x
+        menu._mouseState.dragOffsetY = mouseY - self.y
+        menu._mouseState.isDragging = true
+        self.interactionState = 'dragging'
+    end
+
+    -- Draw window frame
+    setColor(menu.colors.border)
+    draw.OutlinedRect(self.x - 1, self.y - 1, self.x + self.width + 1, self.y + self.height + 1)
+    
+    -- Draw background
+    setColor(menu.colors.windowBg)
+    draw.FilledRect(self.x, self.y, self.x + self.width, self.y + self.height)
+    
+    -- Draw title bar
+    setColor(menu.colors.titleBarBg)
+    draw.FilledRect(self.x, self.y, self.x + self.width, self.y + self.titleBarHeight)
+    
+    -- Draw title
+    setColor(menu.colors.titleText)
+    draw.Text(self.x + 10, self.y + 8, self.title)
+    
+    -- Handle close button
+    if self:_handleCloseButton() then return end
+    
+    -- Calculate content area
+    local contentY = self.y + self.titleBarHeight
+    local contentEnd = self.y + self.height - self.footerHeight
+    local contentHeight = contentEnd - contentY
+    local visibleItems = math.floor(contentHeight / self.itemHeight)
+    local maxScroll = math.max(0, #self.items - visibleItems)
+    self.scrollOffset = math.min(self.scrollOffset, maxScroll)
+    
+    -- Handle scrolling
+    if self.interactionState ~= 'dragging' and isInBounds(
+        self.x, contentY,
+        self.x + self.width, contentEnd
+    ) then
+        local currentTime = globals.RealTime()
+        if currentTime - menu._mouseState.lastScrollTime >= menu.SCROLL_DELAY then
+            if input.IsButtonPressed(MOUSE_WHEEL_UP) and self.scrollOffset > 0 then
+                self.scrollOffset = self.scrollOffset - 1
+                menu._mouseState.lastScrollTime = currentTime
+            elseif input.IsButtonPressed(MOUSE_WHEEL_DOWN) and self.scrollOffset < maxScroll then
+                self.scrollOffset = self.scrollOffset + 1
+                menu._mouseState.lastScrollTime = currentTime
+            end
+        end
+    end
+    
+    -- Draw items
+    local hasScrollbar = #self.items > visibleItems
     for i = 1, visibleItems do
         local itemIndex = i + self.scrollOffset
-        if itemIndex > 0 and itemIndex <= #self.items then
-            local item = self.items[itemIndex]
-            if item and type(item) == "table" then
-                local itemY = contentStart + (i-1) * self.itemHeight
-                local hasScrollbar = #self.items > visibleItems
+        local item = self.items[itemIndex]
+        if item then
+            local itemY = contentY + (i-1) * self.itemHeight
+            
+            -- Only render if not overlapping footer
+            if itemY + self.itemHeight <= contentEnd then
+                -- Item hover check
+                local isHovered = isInBounds(
+                    self.x, itemY,
+                    self.x + self.width - (hasScrollbar and 16 or 0),
+                    itemY + self.itemHeight
+                ) and self.interactionState ~= 'dragging' and
+                    self.interactionState ~= 'scrolling'
                 
-                -- Background highlight for hover or clicked item
-                if self.clickedItemIndex == itemIndex and self.interactionState == 'clicking' then
-                    setColor(menu.colors.itemHoverBg)  -- Use hover color for clicked item
-                elseif self:_isPointInItemBounds(itemIndex) then
+                -- Draw background
+                if isHovered then
                     setColor(menu.colors.itemHoverBg)
                 else
                     setColor(menu.colors.itemBg)
                 end
+                draw.FilledRect(self.x, itemY,
+                              self.x + self.width - (hasScrollbar and 16 or 0),
+                              itemY + self.itemHeight)
                 
-                -- Draw item background
-                draw.FilledRect(self.x + 1, itemY, 
-                              self.x + self.width - (hasScrollbar and 16 or 0) - 1, 
-                              itemY + self.itemHeight - 1)
+                -- Draw text
+                setColor(menu.colors.titleText)
+                local extraText = isHovered and (item.extraText or "") or nil
+                local text = truncateText(item.text, self.width, hasScrollbar, isHovered, extraText)
+                draw.Text(self.x + 10, itemY + 5, text)
                 
-                -- Draw item text
-                if type(item.text) == "string" then
-                    setColor(menu.colors.titleText)
-                    draw.Text(self.x + 10, itemY + 5, item.text)
+                -- Draw extra text on hover
+                if isHovered and item.extraText then
+                    local textWidth = draw.GetTextSize(text)
+                    draw.Text(self.x + 10 + textWidth, itemY + 5, item.extraText)
+                end
+                
+                -- Handle clicks
+                if isHovered and menu._mouseState.released and 
+                   self.clickStartedInWindow and self.clickStartRegion == 'content' then
+                    if self.onItemClick then
+                        self.onItemClick(itemIndex)
+                    end
                 end
             end
         end
     end
-end
-
-function Window:_drawScrollbar()
-    if not self.items or type(self.items) ~= "table" then return end
     
-    local visItemCount = self:_getVisibleItemCount()
-    if #self.items <= visItemCount then return end
-    
-    local contentHeight = self.height - self.titleBarHeight - self.footerHeight
-    local scrollbarWidth = 16
-    local thumbHeight = math.max(20, (visItemCount / #self.items) * contentHeight)
-    
-    -- Calculate thumb position
-    local maxScroll = #self.items - visItemCount
-    if maxScroll > 0 then
-        local scrollProgress = self.scrollOffset / maxScroll
-        local thumbPosition = scrollProgress * (contentHeight - thumbHeight)
+    -- Draw scrollbar if needed
+    if hasScrollbar then
+        local thumbHeight = math.max(20, (visibleItems / #self.items) * contentHeight)
+        local thumbPos = contentY + (self.scrollOffset / (#self.items - visibleItems)) * 
+                        (contentHeight - thumbHeight)
         
-        -- Draw track
+        -- Draw scrollbar background
         setColor(menu.colors.scrollbarBg)
         draw.FilledRect(
-            self.x + self.width - scrollbarWidth,
-            self.y + self.titleBarHeight,
+            self.x + self.width - 16,
+            contentY,
             self.x + self.width,
-            self.y + self.height - self.footerHeight
+            contentEnd
         )
         
         -- Draw thumb
-        local mousePosX, mousePosY = getMousePosition()
-        if menu._state.mouseState.isDraggingScrollbar then
+        if menu._mouseState.isDraggingScrollbar then
             setColor(menu.colors.scrollbarThumbActive)
-        elseif self:_isPointInScrollbar(mousePosX, mousePosY) then
+        elseif isInBounds(
+            self.x + self.width - 16,
+            thumbPos,
+            self.x + self.width,
+            thumbPos + thumbHeight
+        ) then
             setColor(menu.colors.scrollbarThumbHover)
         else
             setColor(menu.colors.scrollbarThumb)
         end
         
         draw.FilledRect(
-            self.x + self.width - scrollbarWidth,
-            self.y + self.titleBarHeight + thumbPosition,
+            self.x + self.width - 16,
+            thumbPos,
             self.x + self.width,
-            self.y + self.titleBarHeight + thumbPosition + thumbHeight
+            thumbPos + thumbHeight
         )
+        
+        -- Handle scrollbar dragging
+        if self.interactionState == 'scrolling' then
+            if input.IsButtonDown(MOUSE_LEFT) then
+                local mouseY = getMousePos()[2]
+                local scrollableHeight = contentHeight - thumbHeight
+                local relativeY = math.max(0, math.min(mouseY - contentY - thumbHeight/2, scrollableHeight))
+                self.scrollOffset = math.floor((relativeY / scrollableHeight) * (#self.items - visibleItems))
+                menu._mouseState.isDraggingScrollbar = true
+                menu._mouseState.wasScrollbarDragging = true
+            else
+                menu._mouseState.isDraggingScrollbar = false
+                self.interactionState = 'none'
+                menu._mouseState.released = false
+            end
+        elseif self.clickStartedInScrollbar and not menu._mouseState.isDraggingScrollbar and 
+               input.IsButtonDown(MOUSE_LEFT) then
+            menu._mouseState.isDraggingScrollbar = true
+            self.interactionState = 'scrolling'
+            menu._mouseState.wasScrollbarDragging = true
+        end
     end
 end
 
-function Window:render()
-    if not self.isOpen then return end
-    
-    -- Update mouse state
-    self:_updateMouseState()
-    
-    -- Handle dragging & scrolling
-    self:_handleDragging()
-    if menu._state.mouseState.isDraggingScrollbar then
-        self:_handleScrolling()
-    end
-    
-    -- Draw window frame
-    setColor(menu.colors.border)
-    draw.OutlinedRect(self.x - 1, self.y - 1, self.x + self.width + 1, self.y + self.height + 1)
-    
-    -- Draw window background
-    setColor(menu.colors.windowBg)
-    draw.FilledRect(self.x, self.y, self.x + self.width, self.y + self.height)
-    
-    -- Draw components
-    self:_drawTitleBar()
-    self:_drawItems()
-    self:_drawScrollbar()
-end
-
--- Public API
+-- Public API functions
 function menu.createWindow(title, config)
     if type(config) ~= "table" then config = {} end
-    local window = Window.new(title, config)
-    table.insert(menu._state.windows, window)
-    return window
+    return Window.new(title, config)
+end
+
+function menu.closeAll()
+    for _, window in ipairs(menu._state.windows) do
+        if window.isOpen then
+            window.isOpen = false
+            if window.onClose then window.onClose() end
+        end
+    end
 end
 
 function menu.isAnyWindowOpen()
     for _, window in ipairs(menu._state.windows) do
-        if window.isOpen then
-            return true
-        end
+        if window.isOpen then return true end
     end
     return false
 end
 
--- Main draw callback handler
-callbacks.Register("Draw", function()
-    -- Update font if needed
+-- Font management
+local function updateFont()
     local currentFont = gui.GetValue("font")
     if currentFont ~= menu._state.lastFontSetting then
         menu._state.menuFont = draw.CreateFont(currentFont, 14, 400)
         menu._state.lastFontSetting = currentFont
     end
     draw.SetFont(menu._state.menuFont)
+end
+
+-- Handle UI Scale
+local originalScaleFactor = client.GetConVar("vgui_ui_scale_factor")
+if originalScaleFactor ~= 1 then
+    client.SetConVar("vgui_ui_scale_factor", "1")
+end
+
+-- Main draw callback
+callbacks.Register("Draw", function()
+    -- Update font
+    updateFont()
     
-    -- Render all windows
-    for _, window in ipairs(menu._state.windows) do
-        if window.isOpen then
-            window:render()
+    -- Handle mouse input and console state
+    local anyWindowOpen = menu.isAnyWindowOpen()
+    
+    if anyWindowOpen then
+        -- Disable mouse input for game
+        input.SetMouseInputEnabled(false)
+        
+        -- Hide console if it's open
+        if engine.Con_IsVisible() then
+            menu._state.wasConsoleOpen = true
+            client.Command("hideconsole", true)
+        end
+    else
+        -- Enable mouse input for game
+        input.SetMouseInputEnabled(true)
+        
+        -- Restore console if needed
+        if menu._state.wasConsoleOpen and engine.IsGameUIVisible() then
+            client.Command("showconsole", true)
+            menu._state.wasConsoleOpen = false
+        end
+    end
+    
+    -- Render all windows in reverse order (for proper z-order)
+    if anyWindowOpen then
+        for i = #menu._state.windows, 1, -1 do
+            local window = menu._state.windows[i]
+            if window.isOpen then
+                window:render()
+            end
         end
     end
 end)
 
--- Register cleanup for script unload
+-- Cleanup on unload
 callbacks.Register("Unload", function()
-    -- Restore original UI scale factor if it was changed
-    if menu._state.originalScaleFactor ~= 1 then
-        client.SetConVar("vgui_ui_scale_factor", tostring(menu._state.originalScaleFactor))
+    -- Re-enable mouse input
+    input.SetMouseInputEnabled(true)
+    
+    -- Restore UI scale if needed
+    if originalScaleFactor ~= 1 then
+        client.SetConVar("vgui_ui_scale_factor", tostring(originalScaleFactor))
     end
     
-    -- Clear all windows
+    -- Close all windows
+    menu.closeAll()
+    
+    -- Clear window list
     menu._state.windows = {}
 end)
 
