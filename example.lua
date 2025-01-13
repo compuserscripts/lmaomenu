@@ -417,6 +417,24 @@ callbacks.Register("Draw", function()
     updateProgressBar()
 end)
 
+-- Add unload callback at the end of the file
+callbacks.Register("Unload", function()
+    -- Close all windows 
+    menu.closeAll()
+    
+    -- Clear our window references
+    mainWindow = nil
+    widgetsWindow = nil 
+    settingsWindow = nil
+    logWindow = nil
+    tabbedWindow = nil
+    
+    -- Clear state
+    demoState = nil
+    
+    print("Menu demo unloaded")
+end)
+
 -- Initialize
 createWindows()
 addLog("Enhanced menu demo initialized")
