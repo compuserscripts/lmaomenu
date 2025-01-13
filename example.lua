@@ -11,6 +11,7 @@ local mainWindow
 local widgetsWindow
 local settingsWindow
 local logWindow
+local tabbedWindow  -- New tabbed window
 
 -- Track demo state
 local demoState = {
@@ -32,14 +33,7 @@ local demoState = {
             {text = "Item 7", extraText = " - Another item"},
             {text = "Item 8", extraText = " - And another"},
             {text = "Item 9", extraText = " - Keep scrolling"},
-            {text = "Item 10", extraText = " - Last one"},
-            {text = "Item 11", extraText = " - Extra info"},
-            {text = "Item 12", extraText = " - More info"},
-            {text = "Item 13", extraText = " - Click me"},
-            {text = "Item 14", extraText = " - Another item"},
-            {text = "Item 15", extraText = " - And another"},
-            {text = "Item 16", extraText = " - Keep scrolling"},
-            {text = "Item 17", extraText = " - Last one"}
+            {text = "Item 10", extraText = " - Last one"}
         }
     },
     lastKeyState = false,
@@ -50,6 +44,7 @@ local demoState = {
 -- Forward declare functions
 local updateWindows
 local updateLogWindow
+local updateTabbedWindow  -- New function for tabbed window
 
 -- Helper function to add log message
 local function addLog(message)
@@ -93,12 +88,59 @@ function updateLogWindow()
     -- Add clear button
     logWindow:createButton("Clear Logs", function()
         demoState.logMessages = {}
-        -- Force an immediate window update after clearing logs
         updateLogWindow()
-        -- Force height recalculation
         logWindow.height = logWindow:calculateHeight()
         addLog("Cleared logs")
     end)
+end
+
+-- Update tabbed window content
+function updateTabbedWindow()
+    if not tabbedWindow or not tabbedWindow.isOpen then return end
+    
+    -- Clear widgets and get tab panel
+    tabbedWindow:clearWidgets()
+    local tabPanel = tabbedWindow:renderTabPanel()
+    
+    -- Add tabs and their content
+    tabPanel:addTab("Controls", function()
+        tabbedWindow:createButton("Tab 1 Button", function()
+            addLog("Button clicked in Controls tab")
+        end)
+        tabbedWindow:createCheckbox("Tab 1 Checkbox", false, function(checked)
+            addLog("Controls tab checkbox: " .. tostring(checked))
+        end)
+        tabbedWindow:createSlider("Tab 1 Slider", 50, 0, 100, function(value)
+            addLog("Controls tab slider: " .. tostring(value))
+        end)
+    end)
+
+    tabPanel:addTab("Visuals", function()
+        tabbedWindow:createProgressBar("Tab 2 Progress", 75, 0, 100)
+        tabbedWindow:createComboBox("Tab 2 Dropdown", 
+            {"Item 1", "Item 2", "Item 3"}, 
+            1,
+            function(index, value)
+                addLog("Selected " .. value .. " in Visuals tab")
+            end
+        )
+    end)
+
+    tabPanel:addTab("List", function()
+        local items = {
+            {text = "List Item 1", extraText = " - Tab 3"},
+            {text = "List Item 2", extraText = " - Click Me"},
+            {text = "List Item 3", extraText = " - In Tab 3"}
+        }
+        tabbedWindow:createList(items, function(index, item)
+            addLog("Clicked " .. item.text .. " in List tab")
+        end)
+    end)
+    
+    -- Call content function for current tab
+    if tabPanel.currentTab and tabPanel.tabs[tabPanel.currentTab] then
+        tabPanel.tabs[tabPanel.currentTab].content()
+    end
 end
 
 -- Update all windows content
@@ -121,7 +163,6 @@ function updateWindows()
             addLog("Slider changed: " .. string.format("%.1f", value))
         end)
 
-        -- Store progress bar widget reference for direct updates
         widgetsWindow:createProgressBar("Demo Progress", 
             math.floor(demoState.settings.progressValue), 0, 100)
 
@@ -151,7 +192,6 @@ function updateWindows()
         settingsWindow:createCheckbox("Enable Effects", demoState.settings.checkboxState, function(checked)
             demoState.settings.checkboxState = checked
             addLog("Toggled effects: " .. tostring(checked))
-            -- Do not call updateWindows here
         end)
 
         settingsWindow:createComboBox("Theme", 
@@ -160,7 +200,6 @@ function updateWindows()
             function(index, value)
                 demoState.settings.selectedOption = index
                 addLog("Changed theme to: " .. value)
-                -- Do not call updateWindows here
             end
         )
     end
@@ -168,6 +207,11 @@ function updateWindows()
     -- Update log window
     if logWindow and logWindow.isOpen then
         updateLogWindow()
+    end
+    
+    -- Update tabbed window
+    if tabbedWindow and tabbedWindow.isOpen then
+        updateTabbedWindow()
     end
 end
 
@@ -178,7 +222,7 @@ local function createWindows()
         x = 100,
         y = 100,
         width = 300,
-        desiredItems = 5,
+        desiredItems = 6,  -- Increased for new button
         onClose = function()
             menuLib.closeAll()
             addLog("Closed all windows")
@@ -219,6 +263,18 @@ local function createWindows()
         end
     end)
 
+    -- Add new tabbed window button
+    mainWindow:createButton("Tab Demo", function()
+        if not tabbedWindow.isOpen then
+            tabbedWindow:focus()
+            updateWindows()
+            addLog("Opened tabbed window")
+        else
+            tabbedWindow:unfocus()
+            addLog("Closed tabbed window")
+        end
+    end)
+
     mainWindow:createButton("Reset Windows", function()
         mainWindow.x = 100
         mainWindow.y = 100
@@ -228,6 +284,8 @@ local function createWindows()
         settingsWindow.y = 300
         logWindow.x = 420
         logWindow.y = 500
+        tabbedWindow.x = 420
+        tabbedWindow.y = 200
         addLog("Reset window positions")
     end)
 
@@ -253,6 +311,14 @@ local function createWindows()
         y = 500,
         width = 400,
         desiredItems = 15
+    })
+
+    -- Tabbed window
+    tabbedWindow = menuLib.createWindow("Tabbed Window Demo", {
+        x = 420,
+        y = 200,
+        width = 400,
+        desiredItems = 10
     })
 
     -- Initialize windows content
@@ -295,9 +361,7 @@ local function updateProgressBar()
             
             demoState.settings.progressValue = math.floor(demoState.settings.progressValue)
             
-            -- Only update the progress bar widget if it exists
             if widgetsWindow and widgetsWindow.isOpen then
-                -- Find and update only the progress bar widget
                 for _, widget in ipairs(widgetsWindow.widgets) do
                     if widget.type == 'progress' then
                         widget.state.value = demoState.settings.progressValue
@@ -321,5 +385,5 @@ createWindows()
 addLog("Enhanced menu demo initialized")
 
 print("Enhanced menu demo loaded! Press DELETE to open/close menu")
+print("Click 'Tab Demo' to see the tabbed window example!")
 print("Hover over items to see descriptions")
-print("Try all the widgets in the Widget Showcase window!")
