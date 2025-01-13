@@ -996,25 +996,34 @@ end
 -- Main draw callback
 callbacks.Register("Draw", function()
     updateFont()
+
+    -- Store current UI state
+    local isGameUIVisible = engine.IsGameUIVisible()
+    local isConsoleVisible = engine.Con_IsVisible()
     
+    -- Check if any window is open
     local anyWindowOpen = menu.isAnyWindowOpen()
     
     if anyWindowOpen then
-        input.SetMouseInputEnabled(false)
+        -- Block game input when menu is open
+        input.SetMouseInputEnabled("false")
         
-        if engine.Con_IsVisible() then
+        -- Handle console visibility
+        if isConsoleVisible then
             menu._state.wasConsoleOpen = true
             client.Command("hideconsole", true)
         end
     else
-        input.SetMouseInputEnabled(true)
-        
-        if menu._state.wasConsoleOpen and engine.IsGameUIVisible() then
+        -- Restore console if it was previously open and enable input
+        input.SetMouseInputEnabled()
+
+        if menu._state.wasConsoleOpen and isGameUIVisible then
             client.Command("showconsole", true)
             menu._state.wasConsoleOpen = false
         end
     end
     
+    -- Only render if we have windows open
     if anyWindowOpen then
         -- Reset event handled state at the start of each frame
         menu._mouseState.eventHandled = false
@@ -1036,7 +1045,7 @@ end)
 
 -- Cleanup on unload
 callbacks.Register("Unload", function()
-    input.SetMouseInputEnabled(true)
+    input.SetMouseInputEnabled()
     
     if originalScaleFactor ~= 1 then
         client.SetConVar("vgui_ui_scale_factor", tostring(originalScaleFactor))
