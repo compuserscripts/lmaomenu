@@ -19,7 +19,7 @@ local menu = {
         hasSeenMousePress = false,
         lastScrollTime = 0,
         activeDropdown = nil,
-        eventHandled = false  -- New: track if event has been handled
+        eventHandled = false
     },
 
     -- Global menu state
@@ -30,8 +30,9 @@ local menu = {
         lastFontSetting = nil,
         wasConsoleOpen = false,
         activeWidget = nil,
-        windowStack = {},  -- Track window hierarchy
-        lastInteractedWidget = nil  -- Track last interacted widget
+        windowStack = {},
+        lastInteractedWidget = nil,
+        CurrentID = 1
     },
 
     -- Theme colors
@@ -55,7 +56,15 @@ local menu = {
         progressBar = {55, 100, 215, 255},
         dropdownBg = {30, 30, 30, 255},
         dropdownBorder = {50, 50, 50, 255},
-        dropdownText = {255, 255, 255, 255}
+        dropdownText = {255, 255, 255, 255},
+        tabBg = {25, 25, 25, 255},
+        tabHoverBg = {40, 40, 40, 255},
+        tabActiveBg = {60, 60, 60, 255},
+        tabText = {255, 255, 255, 255},
+        tabBar = {40, 40, 40, 255},  -- Background color for tab bar
+        tab = {50, 50, 50, 255},     -- Normal tab color
+        tabHover = {60, 60, 60, 255}, -- Tab hover color
+        tabActive = {70, 70, 70, 255}, -- Selected tab color
     }
 }
 
@@ -83,7 +92,7 @@ local function truncateText(text, maxWidth, hasScrollbar, isHovered, extraText)
     
     if isHovered and extraText then
         local extraWidth = draw.GetTextSize(extraText)
-        actualMaxWidth = math.floor(actualMaxWidth - extraWidth - 5) -- Added 5px spacing
+        actualMaxWidth = math.floor(actualMaxWidth - extraWidth - 5)
     end
     
     local fullWidth = draw.GetTextSize(text)
@@ -132,6 +141,111 @@ function Widget.new(type, config, window)
     return self
 end
 
+-- TabPanel class
+local TabPanel = {}
+TabPanel.__index = TabPanel
+
+function TabPanel.new(config, window)
+    local self = setmetatable({}, TabPanel)
+    self.type = 'tabpanel'
+    self.config = config or {}
+    self.window = window
+    self.tabs = {}
+    self.tabOrder = {}
+    self.currentTab = nil
+    self.itemHeight = 30  -- Fixed tab height
+    self.state = {
+        isHovered = false,
+        isActive = false
+    }
+    -- Set config defaults
+    self.config.height = self.config.height or self.itemHeight
+    return self
+end
+
+function TabPanel:addTab(name, contentFunc)
+    if type(name) == "string" then
+        self.tabs[name] = contentFunc
+        table.insert(self.tabOrder, name)
+        if self.currentTab == nil then
+            self.currentTab = name
+            -- Call the content function for the first tab
+            if contentFunc then
+                contentFunc()
+            end
+        end
+    end
+end
+
+function TabPanel:selectTab(name)
+    if self.tabs[name] and name ~= self.currentTab then
+        self.currentTab = name
+        -- Clear existing widgets
+        if self.window then
+            self.window:clearWidgets()
+        end
+        -- Call content function for new tab
+        if self.tabs[name] then
+            self.tabs[name]()
+        end
+        -- Recalculate window height
+        if self.window then
+            self.window.height = self.window:calculateHeight()
+        end
+    end
+end
+
+function TabPanel:render(menu, x, y)
+    local tabCount = #self.tabOrder
+    if tabCount == 0 then return self.itemHeight end
+
+    local tabWidth = math.floor(self.window.width / tabCount)
+    local remainingPixels = self.window.width - (tabWidth * tabCount)
+    local currentX = 0
+    
+    -- Draw tab bar background
+    setColor(menu.colors.titleBarBg)
+    draw.FilledRect(x, y, x + self.window.width, y + self.itemHeight)
+    
+    -- Draw tabs
+    for i, name in ipairs(self.tabOrder) do
+        local tabX = math.floor(x + currentX)
+        local currentTabWidth = i == tabCount and (tabWidth + remainingPixels) or tabWidth
+        local tabRight = math.floor(tabX + currentTabWidth)
+        local tabBottom = math.floor(y + self.itemHeight)
+        
+        -- Check if mouse is over this tab
+        local isHovered = isInBounds(tabX, y, tabRight, tabBottom)
+        
+        -- Set colors based on state
+        if name == self.currentTab then
+            setColor(menu.colors.itemActiveBg)
+        elseif isHovered then
+            setColor(menu.colors.itemHoverBg)
+            if menu._mouseState.released then
+                self:selectTab(name)
+            end
+        else
+            setColor(menu.colors.itemBg)
+        end
+        
+        -- Draw tab background
+        draw.FilledRect(tabX, y, tabRight, tabBottom)
+        
+        -- Draw tab text
+        setColor(menu.colors.titleText)
+        local textWidth = draw.GetTextSize(name)
+        draw.Text(
+            math.floor(tabX + (currentTabWidth/2) - (textWidth/2)), 
+            math.floor(y + (self.itemHeight/2) - 8), 
+            name
+        )
+        
+        currentX = currentX + currentTabWidth
+    end
+    
+    return self.itemHeight
+end
 
 -- Window class
 local Window = {}
@@ -283,10 +397,14 @@ end
 function Window:calculateHeight()
     local contentHeight = 0
     
+    -- Add tab panel height if exists
+    if self._tabPanel and #self._tabPanel.tabOrder > 0 then
+        contentHeight = contentHeight + self._tabPanel.itemHeight
+    end
+    
     for _, widget in ipairs(self.widgets) do
         if widget.type == 'list' then
-            -- Use same minimum height logic as in renderList
-            local minVisibleItems = 3  -- Keep this the same as in renderList
+            local minVisibleItems = 3
             local visibleItems = math.max(minVisibleItems, math.min(#widget.config.items, widget.config.visibleItems))
             contentHeight = contentHeight + (visibleItems * widget.config.itemHeight)
         else
@@ -732,6 +850,14 @@ function Window:renderList(widget, x, y)
     return visibleHeight
 end
 
+-- Add TabPanel creation method to Window
+function Window:renderTabPanel()
+    if not self._tabPanel then
+        self._tabPanel = TabPanel.new({}, self)
+    end
+    return self._tabPanel
+end
+
 function Window:render()
     if not self.isOpen then return end
     
@@ -759,6 +885,7 @@ function Window:render()
         self.interactionState = 'dragging'
     end
 
+    -- Draw window frame
     setColor(menu.colors.border)
     draw.OutlinedRect(
         math.floor(self.x - 1),
@@ -775,6 +902,7 @@ function Window:render()
         math.floor(self.y + self.height)
     )
     
+    -- Draw title bar
     setColor(menu.colors.titleBarBg)
     draw.FilledRect(
         math.floor(self.x),
@@ -794,8 +922,18 @@ function Window:render()
     
     local currentY = math.floor(self.y + self.titleBarHeight)
     
+    -- Render tab panel if exists
+    if self._tabPanel and #self._tabPanel.tabOrder > 0 then
+        currentY = currentY + self._tabPanel:render(menu, self.x, currentY)
+    end
+    
+    -- Call current tab's content function
+    if self._tabPanel and self._tabPanel.currentTab and self._tabPanel.tabs[self._tabPanel.currentTab] then
+        self._tabPanel.tabs[self._tabPanel.currentTab]()
+    end
+    
+    -- Render widgets
     for _, widget in ipairs(self.widgets) do
-        -- Ensure base coordinates are floored
         local baseX = math.floor(self.x + 10)
         if widget.type == 'button' then
             currentY = currentY + self:renderButton(widget, baseX, currentY)
@@ -810,7 +948,7 @@ function Window:render()
         elseif widget.type == 'list' then
             currentY = currentY + self:renderList(widget, baseX, currentY)
         end
-        currentY = math.floor(currentY + 5)  -- Floor the spacing addition
+        currentY = math.floor(currentY + 5)
     end
 end
 
