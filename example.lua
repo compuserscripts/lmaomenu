@@ -4,7 +4,7 @@
 ]]
 
 -- Import the menu library
-local menuLib = require("menu")
+local menu = require("menu")
 
 -- Create our windows
 local mainWindow
@@ -94,52 +94,89 @@ function updateLogWindow()
     end)
 end
 
--- Update tabbed window content
 function updateTabbedWindow()
     if not tabbedWindow or not tabbedWindow.isOpen then return end
     
-    -- Clear widgets and get tab panel
-    tabbedWindow:clearWidgets()
+    -- Initialize tab states if they don't exist
+    if not tabbedWindow.tabStates then
+        tabbedWindow.tabStates = {
+            Controls = {
+                checkboxState = false,
+                sliderValue = 50
+            },
+            Visuals = {
+                dropdownSelected = 1
+            }
+        }
+    end
+    
+    -- Get tab panel without clearing widgets first
     local tabPanel = tabbedWindow:renderTabPanel()
     
-    -- Add tabs and their content
-    tabPanel:addTab("Controls", function()
-        tabbedWindow:createButton("Tab 1 Button", function()
-            addLog("Button clicked in Controls tab")
+    -- Only add tabs if they haven't been added yet
+    if #tabPanel.tabOrder == 0 then
+        tabPanel:addTab("Controls", function()
+            tabbedWindow.widgets = {}
+            local states = tabbedWindow.tabStates.Controls
+            tabbedWindow:createButton("Tab 1 Button", function()
+                addLog("Button clicked in Controls tab")
+            end)
+            tabbedWindow:createCheckbox("Tab 1 Checkbox", states.checkboxState, function(checked)
+                states.checkboxState = checked
+                addLog("Controls tab checkbox: " .. tostring(checked))
+            end)
+            tabbedWindow:createSlider("Tab 1 Slider", states.sliderValue, 0, 100, function(value)
+                states.sliderValue = value
+                addLog("Controls tab slider: " .. tostring(value))
+            end)
         end)
-        tabbedWindow:createCheckbox("Tab 1 Checkbox", false, function(checked)
-            addLog("Controls tab checkbox: " .. tostring(checked))
-        end)
-        tabbedWindow:createSlider("Tab 1 Slider", 50, 0, 100, function(value)
-            addLog("Controls tab slider: " .. tostring(value))
-        end)
-    end)
 
-    tabPanel:addTab("Visuals", function()
-        tabbedWindow:createProgressBar("Tab 2 Progress", 75, 0, 100)
-        tabbedWindow:createComboBox("Tab 2 Dropdown", 
-            {"Item 1", "Item 2", "Item 3"}, 
-            1,
-            function(index, value)
-                addLog("Selected " .. value .. " in Visuals tab")
+        tabPanel:addTab("Visuals", function()
+            -- Clear active dropdown when switching to this tab
+            menu._mouseState.activeDropdown = nil
+            
+            tabbedWindow.widgets = {}
+            local states = tabbedWindow.tabStates.Visuals
+            tabbedWindow:createProgressBar("Tab 2 Progress", 75, 0, 100)
+            
+            -- Create combo box and store reference
+            local combo = tabbedWindow:createComboBox("Tab 2 Dropdown", 
+                {"Item 1", "Item 2", "Item 3"}, 
+                states.dropdownSelected,
+                function(index, value)
+                    states.dropdownSelected = index
+                    addLog("Selected " .. value .. " in Visuals tab")
+                end
+            )
+            
+            -- Store combo box reference for this tab
+            tabbedWindow.tabStates.Visuals.comboWidget = combo
+        end)
+
+        tabPanel:addTab("List", function()
+            -- Clear active dropdown when switching to this tab
+            menu._mouseState.activeDropdown = nil
+            
+            tabbedWindow.widgets = {}
+            local items = {
+                {text = "List Item 1", extraText = " - Tab 3"},
+                {text = "List Item 2", extraText = " - Click Me"},
+                {text = "List Item 3", extraText = " - In Tab 3"}
+            }
+            tabbedWindow:createList(items, function(index, item)
+                addLog("Clicked " .. item.text .. " in List tab")
+            end)
+        end)
+        
+        -- Override tab panel's selectTab to handle dropdown state
+        local originalSelectTab = tabPanel.selectTab
+        tabPanel.selectTab = function(self, name)
+            -- Clear any active dropdown before switching
+            menu._mouseState.activeDropdown = nil
+            if originalSelectTab then
+                originalSelectTab(self, name)
             end
-        )
-    end)
-
-    tabPanel:addTab("List", function()
-        local items = {
-            {text = "List Item 1", extraText = " - Tab 3"},
-            {text = "List Item 2", extraText = " - Click Me"},
-            {text = "List Item 3", extraText = " - In Tab 3"}
-        }
-        tabbedWindow:createList(items, function(index, item)
-            addLog("Clicked " .. item.text .. " in List tab")
-        end)
-    end)
-    
-    -- Call content function for current tab
-    if tabPanel.currentTab and tabPanel.tabs[tabPanel.currentTab] then
-        tabPanel.tabs[tabPanel.currentTab].content()
+        end
     end
 end
 
@@ -209,7 +246,7 @@ function updateWindows()
         updateLogWindow()
     end
     
-    -- Update tabbed window
+    -- Update tabbed window - but don't clear widgets here
     if tabbedWindow and tabbedWindow.isOpen then
         updateTabbedWindow()
     end
@@ -218,13 +255,13 @@ end
 -- Initialize windows
 local function createWindows()
     -- Main menu window
-    mainWindow = menuLib.createWindow("Enhanced Menu Demo", {
+    mainWindow = menu.createWindow("Enhanced Menu Demo", {
         x = 100,
         y = 100,
         width = 300,
         desiredItems = 6,  -- Increased for new button
         onClose = function()
-            menuLib.closeAll()
+            menu.closeAll()
             addLog("Closed all windows")
         end
     })
@@ -290,7 +327,7 @@ local function createWindows()
     end)
 
     -- Widgets showcase window
-    widgetsWindow = menuLib.createWindow("Widget Showcase", {
+    widgetsWindow = menu.createWindow("Widget Showcase", {
         x = 420,
         y = 100,
         width = 400,
@@ -298,7 +335,7 @@ local function createWindows()
     })
 
     -- Settings window
-    settingsWindow = menuLib.createWindow("Settings", {
+    settingsWindow = menu.createWindow("Settings", {
         x = 420,
         y = 300,
         width = 400,
@@ -306,7 +343,7 @@ local function createWindows()
     })
 
     -- Log window
-    logWindow = menuLib.createWindow("Message Log", {
+    logWindow = menu.createWindow("Message Log", {
         x = 420,
         y = 500,
         width = 400,
@@ -314,7 +351,7 @@ local function createWindows()
     })
 
     -- Tabbed window
-    tabbedWindow = menuLib.createWindow("Tabbed Window Demo", {
+    tabbedWindow = menu.createWindow("Tabbed Window Demo", {
         x = 420,
         y = 200,
         width = 400,
@@ -335,7 +372,7 @@ local function handleToggleMenu()
             updateWindows()
             addLog("Opened menu")
         else
-            menuLib.closeAll()
+            menu.closeAll()
             addLog("Closed menu")
         end
     end
