@@ -158,6 +158,7 @@ function TabPanel.new(config, window)
         isHovered = false,
         isActive = false
     }
+    self.initialized = false  -- Add this flag
     -- Set config defaults
     self.config.height = self.config.height or self.itemHeight
     return self
@@ -180,17 +181,13 @@ end
 function TabPanel:selectTab(name)
     if self.tabs[name] and name ~= self.currentTab then
         self.currentTab = name
+        -- Clear any active dropdown
+        menu._mouseState.activeDropdown = nil
         -- Clear existing widgets
-        if self.window then
-            self.window:clearWidgets()
-        end
+        self.window.widgets = {}
         -- Call content function for new tab
         if self.tabs[name] then
             self.tabs[name]()
-        end
-        -- Recalculate window height
-        if self.window then
-            self.window.height = self.window:calculateHeight()
         end
     end
 end
@@ -398,7 +395,7 @@ function Window:calculateHeight()
     local contentHeight = 0
     
     -- Add tab panel height if exists
-    if self._tabPanel and #self._tabPanel.tabOrder > 0 then
+    if self._tabPanel then
         contentHeight = contentHeight + self._tabPanel.itemHeight
     end
     
@@ -927,9 +924,12 @@ function Window:render()
         currentY = currentY + self._tabPanel:render(menu, self.x, currentY)
     end
     
-    -- Call current tab's content function
-    if self._tabPanel and self._tabPanel.currentTab and self._tabPanel.tabs[self._tabPanel.currentTab] then
-        self._tabPanel.tabs[self._tabPanel.currentTab]()
+    -- Initialize first tab if not done yet
+    if self._tabPanel and not self._tabPanel.initialized and self._tabPanel.currentTab then
+        self._tabPanel.initialized = true
+        if self._tabPanel.tabs[self._tabPanel.currentTab] then
+            self._tabPanel.tabs[self._tabPanel.currentTab]()
+        end
     end
     
     -- Render widgets
