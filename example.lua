@@ -11,7 +11,8 @@ local mainWindow
 local widgetsWindow
 local settingsWindow
 local logWindow
-local tabbedWindow  -- New tabbed window
+local tabbedWindow
+local textInputWindow  -- New window for text input showcase
 
 -- Track demo state
 local demoState = {
@@ -19,7 +20,7 @@ local demoState = {
     maxLogs = 100,
     settings = {
         sliderValue = 50,
-        checkboxState = false,  -- Start with checkbox unchecked
+        checkboxState = false,
         selectedOption = 1,
         progressValue = 0,
         progressDirection = 1,
@@ -27,13 +28,19 @@ local demoState = {
             {text = "Draggable Windows", extraText = " - Try dragging window titles"},
             {text = "Scrollable Content", extraText = " - Use mousewheel to scroll"},
             {text = "Hover Information", extraText = " - Like this tooltip!"},
-            {text = "Item 4", extraText = " - Extra info"},
+            {text = "Text Input Support", extraText = " - With undo/redo"},
             {text = "Item 5", extraText = " - More info"},
             {text = "Item 6", extraText = " - Click me"},
             {text = "Item 7", extraText = " - Another item"},
             {text = "Item 8", extraText = " - And another"},
             {text = "Item 9", extraText = " - Keep scrolling"},
             {text = "Item 10", extraText = " - Last one"}
+        },
+        textInput = {
+            basicText = "",
+            passwordText = "",
+            prefixedText = "prefix:",
+            multilineText = ""
         }
     },
     lastKeyState = false,
@@ -44,7 +51,8 @@ local demoState = {
 -- Forward declare functions
 local updateWindows
 local updateLogWindow
-local updateTabbedWindow  -- New function for tabbed window
+local updateTabbedWindow
+local updateTextInputWindow  -- New function for text input window
 
 -- Helper function to add log message
 local function addLog(message)
@@ -64,6 +72,63 @@ local function addLog(message)
     if logWindow and logWindow.isOpen then
         updateLogWindow()
     end
+end
+
+-- Update text input window content
+function updateTextInputWindow()
+    if not textInputWindow or not textInputWindow.isOpen then return end
+    
+    textInputWindow:clearWidgets()
+    
+    -- Basic text input
+    textInputWindow:createTextInput({
+        text = "Basic Input",
+        placeholder = "Type something here...",
+        value = demoState.settings.textInput.basicText,
+        onChange = function(text)
+            demoState.settings.textInput.basicText = text
+            addLog("Basic input changed: " .. text)
+        end,
+        maxLength = 50
+    })
+    
+    -- Password input
+    textInputWindow:createTextInput({
+        text = "Password Input",
+        placeholder = "Enter password...",
+        value = demoState.settings.textInput.passwordText,
+        password = true,
+        onChange = function(text)
+            demoState.settings.textInput.passwordText = text
+            addLog("Password changed (length: " .. #text .. ")")
+        end,
+        maxLength = 32
+    })
+    
+    -- Prefixed input (with preserved prefix)
+    textInputWindow:createTextInput({
+        text = "Prefixed Input",
+        placeholder = "Type after prefix...",
+        value = demoState.settings.textInput.prefixedText,
+        preservePrefix = true,
+        onChange = function(text)
+            demoState.settings.textInput.prefixedText = text
+            addLog("Prefixed input changed: " .. text)
+        end,
+        maxLength = 50
+    })
+    
+    -- Add some info text using a list
+    local infoItems = {
+        {text = "Press Ctrl+Z to undo", extraText = " - Text input supports undo/redo"},
+        {text = "Press Ctrl+Y to redo", extraText = " - Or Ctrl+Shift+Z"},
+        {text = "Use arrow keys to navigate", extraText = " - Hold Ctrl to move by word"},
+        {text = "Hold Shift while moving", extraText = " - To select text"}
+    }
+    
+    textInputWindow:createList(infoItems, function(index, item)
+        addLog("Clicked info: " .. item.text)
+    end)
 end
 
 -- Update log window content
@@ -182,6 +247,10 @@ end
 
 -- Update all windows content
 function updateWindows()
+    -- Update text input window
+    if textInputWindow and textInputWindow.isOpen then
+        updateTextInputWindow()
+    end
     -- Update widgets showcase window
     if widgetsWindow and widgetsWindow.isOpen then
         widgetsWindow:clearWidgets()
@@ -259,7 +328,7 @@ local function createWindows()
         x = 100,
         y = 100,
         width = 300,
-        desiredItems = 6,  -- Increased for new button
+        desiredItems = 7,  -- Increased for new button
         onClose = function()
             menu.closeAll()
             addLog("Closed all windows")
@@ -275,6 +344,17 @@ local function createWindows()
         else
             widgetsWindow:unfocus()
             addLog("Closed widgets window")
+        end
+    end)
+
+    mainWindow:createButton("Text Input Demo", function()
+        if not textInputWindow.isOpen then
+            textInputWindow:focus()
+            updateWindows()
+            addLog("Opened text input window")
+        else
+            textInputWindow:unfocus()
+            addLog("Closed text input window")
         end
     end)
 
@@ -332,6 +412,13 @@ local function createWindows()
         y = 100,
         width = 400,
         desiredItems = 12
+    })
+
+    textInputWindow = menu.createWindow("Text Input Demo", {
+        x = 420,
+        y = 400,
+        width = 400,
+        desiredItems = 10
     })
 
     -- Settings window
