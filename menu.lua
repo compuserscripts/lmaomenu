@@ -1234,18 +1234,30 @@ function menu.handleInput(maxLength, preservePrefix)
     else
         menu._inputState.lastKeyState[KEY_BACKSPACE] = false
     end
-    
-    -- Handle arrow key navigation
+
+    -- Handle arrow key navigation with and without Ctrl
     if ctrlPressed then
-        -- Word navigation
-        if input.IsButtonPressed(KEY_LEFT) then
+        -- For Ctrl+Arrow, only move on fresh key press, not hold
+        if not menu._inputState.lastKeyState[KEY_LEFT] and input.IsButtonDown(KEY_LEFT) then
+            menu._inputState.lastKeyState[KEY_LEFT] = true
             local pos = menu._inputState.cursorPosition
-            while pos > (preservePrefix and 1 or 0) and menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos, pos)) do
+            local minPos = preservePrefix and 1 or 0
+
+            -- Skip any spaces before cursor
+            while pos > minPos and menu._inputState.inputBuffer:sub(pos, pos):match("%s") do
                 pos = pos - 1
             end
-            while pos > (preservePrefix and 1 or 0) and not menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos - 1, pos - 1)) do
+            
+            -- Skip to start of current/previous word
+            while pos > minPos and not menu._inputState.inputBuffer:sub(pos, pos):match("%s") do
                 pos = pos - 1
             end
+            
+            -- Skip any trailing spaces
+            while pos > minPos and menu._inputState.inputBuffer:sub(pos, pos):match("%s") do
+                pos = pos - 1
+            end
+            
             if shiftPressed then
                 if not menu._inputState.selectionStart then
                     menu._inputState.selectionStart = menu._inputState.cursorPosition
@@ -1255,16 +1267,27 @@ function menu.handleInput(maxLength, preservePrefix)
                 menu._inputState.selectionStart = nil
                 menu._inputState.selectionEnd = nil
             end
+            
             menu._inputState.cursorPosition = pos
             changed = true
-        elseif input.IsButtonPressed(KEY_RIGHT) then
+        elseif not input.IsButtonDown(KEY_LEFT) then
+            menu._inputState.lastKeyState[KEY_LEFT] = false
+        end
+        
+        if not menu._inputState.lastKeyState[KEY_RIGHT] and input.IsButtonDown(KEY_RIGHT) then
+            menu._inputState.lastKeyState[KEY_RIGHT] = true
             local pos = menu._inputState.cursorPosition
-            while pos < #menu._inputState.inputBuffer and not menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos + 1, pos + 1)) do
+            
+            -- Skip any spaces after cursor
+            while pos < #menu._inputState.inputBuffer and menu._inputState.inputBuffer:sub(pos + 1, pos + 1):match("%s") do
                 pos = pos + 1
             end
-            while pos < #menu._inputState.inputBuffer and menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos + 1, pos + 1)) do
+            
+            -- Skip to end of current/next word
+            while pos < #menu._inputState.inputBuffer and not menu._inputState.inputBuffer:sub(pos + 1, pos + 1):match("%s") do
                 pos = pos + 1
             end
+            
             if shiftPressed then
                 if not menu._inputState.selectionStart then
                     menu._inputState.selectionStart = menu._inputState.cursorPosition
@@ -1274,11 +1297,14 @@ function menu.handleInput(maxLength, preservePrefix)
                 menu._inputState.selectionStart = nil
                 menu._inputState.selectionEnd = nil
             end
+            
             menu._inputState.cursorPosition = pos
             changed = true
+        elseif not input.IsButtonDown(KEY_RIGHT) then
+            menu._inputState.lastKeyState[KEY_RIGHT] = false
         end
     else
-        -- Character navigation
+        -- Regular arrow key navigation (without Ctrl)
         if input.IsButtonDown(KEY_LEFT) then
             local minPos = preservePrefix and 1 or 0
             
@@ -1441,21 +1467,6 @@ function menu.handleInput(maxLength, preservePrefix)
             menu._keyRepeatState.pressStartTimes[key] = nil
             menu._keyRepeatState.lastRepeatTimes[key] = nil
         end
-    end
-    
-    -- Handle special keys (ctrl combinations, navigation, etc.)
-    if ctrlPressed then
-        -- Add control key handling (Ctrl+C, Ctrl+V, etc.)
-        if input.IsButtonPressed(KEY_C) and not menu._inputState.lastKeyState[KEY_C] then
-            if menu._inputState.selectionStart and menu._inputState.selectionEnd then
-                local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                if preservePrefix and start == 0 then start = 1 end
-                menu._inputState.clipboard = menu._inputState.inputBuffer:sub(start + 1, finish)
-            end
-        end
-        
-        -- Add other ctrl combinations here...
     end
     
     return changed
