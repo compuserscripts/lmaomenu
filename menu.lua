@@ -231,6 +231,97 @@ function menu.getPrevCharLength(text, pos)
     return 1
 end
 
+-- Add this function to handle character case based on Caps Lock and Shift
+function menu.getCharacterCase(chars, shiftPressed)
+    if chars.normal:match("%a") then
+        local useUpperCase = (menu._inputState.capsLockEnabled and not shiftPressed) or 
+                           (not menu._inputState.capsLockEnabled and shiftPressed)
+        return useUpperCase and chars.shift or chars.normal
+    else
+        return shiftPressed and chars.shift or chars.normal
+    end
+end
+
+-- Add these new clipboard functions
+function menu.handleSelectAll(preservePrefix)
+    if preservePrefix then
+        menu._inputState.selectionStart = 1
+        menu._inputState.selectionEnd = #menu._inputState.inputBuffer
+        menu._inputState.cursorPosition = menu._inputState.selectionEnd
+    else
+        menu._inputState.selectionStart = 0
+        menu._inputState.selectionEnd = #menu._inputState.inputBuffer
+        menu._inputState.cursorPosition = menu._inputState.selectionEnd
+    end
+end
+
+function menu.handleCopy()
+    if menu._inputState.selectionStart and menu._inputState.selectionEnd then
+        local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+        local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+        menu._inputState.clipboard = menu._inputState.inputBuffer:sub(start + 1, finish)
+    end
+end
+
+function menu.handleCut(preservePrefix)
+    if menu._inputState.selectionStart and menu._inputState.selectionEnd then
+        local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+        local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+        
+        -- Don't cut prefix if preservePrefix is true
+        if preservePrefix and start == 0 then
+            start = 1
+        end
+        
+        -- Store cut text in clipboard
+        menu._inputState.clipboard = menu._inputState.inputBuffer:sub(start + 1, finish)
+        
+        -- Remove selected text
+        menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, start) ..
+                                     menu._inputState.inputBuffer:sub(finish + 1)
+        menu._inputState.cursorPosition = start
+        menu._inputState.selectionStart = nil
+        menu._inputState.selectionEnd = nil
+        
+        return true  -- Return true to indicate change
+    end
+    return false
+end
+
+function menu.handlePaste(maxLength, preservePrefix)
+    if menu._inputState.clipboard and menu._inputState.clipboard ~= "" then
+        if menu._inputState.selectionStart and menu._inputState.selectionEnd then
+            local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+            local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+            
+            if preservePrefix and start == 0 then
+                start = 1
+            end
+            
+            local before = menu._inputState.inputBuffer:sub(1, start)
+            local after = menu._inputState.inputBuffer:sub(finish + 1)
+            
+            if #before + #menu._inputState.clipboard + #after <= maxLength then
+                menu._inputState.inputBuffer = before .. menu._inputState.clipboard .. after
+                menu._inputState.cursorPosition = start + #menu._inputState.clipboard
+                menu._inputState.selectionStart = nil
+                menu._inputState.selectionEnd = nil
+                return true  -- Return true to indicate change
+            end
+        else
+            local before = menu._inputState.inputBuffer:sub(1, menu._inputState.cursorPosition)
+            local after = menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 1)
+            
+            if #before + #menu._inputState.clipboard + #after <= maxLength then
+                menu._inputState.inputBuffer = before .. menu._inputState.clipboard .. after
+                menu._inputState.cursorPosition = menu._inputState.cursorPosition + #menu._inputState.clipboard
+                return true  -- Return true to indicate change
+            end
+        end
+    end
+    return false
+end
+
 local function truncateText(text, maxWidth, hasScrollbar, isHovered, extraText)
     local padding = 20
     local scrollbarWidth = hasScrollbar and 16 or 0
@@ -1182,12 +1273,48 @@ function menu.handleInput(maxLength, preservePrefix)
     local shiftPressed = input.IsButtonDown(KEY_LSHIFT) or input.IsButtonDown(KEY_RSHIFT)
     local changed = false
     
-    -- Handle Caps Lock
+    -- Handle Caps Lock toggle
     if input.IsButtonPressed(KEY_CAPSLOCK) and not menu._inputState.lastKeyState[KEY_CAPSLOCK] then
         menu._inputState.capsLockEnabled = not menu._inputState.capsLockEnabled
         changed = true
     end
     menu._inputState.lastKeyState[KEY_CAPSLOCK] = input.IsButtonDown(KEY_CAPSLOCK)
+    
+    -- Track Shift state
+    menu._inputState.lastShiftState = shiftPressed
+    
+    -- Handle clipboard operations when Ctrl is pressed
+    if ctrlPressed then
+        -- Select All (Ctrl+A)
+        if input.IsButtonPressed(KEY_A) then
+            menu.handleSelectAll(preservePrefix)
+            changed = true
+            return changed  -- Skip other input processing
+        end
+        
+        -- Copy (Ctrl+C)
+        if input.IsButtonPressed(KEY_C) then
+            menu.handleCopy()
+            return changed  -- Skip other input processing
+        end
+        
+        -- Cut (Ctrl+X)
+        if input.IsButtonPressed(KEY_X) then
+            if menu.handleCut(preservePrefix) then
+                changed = true
+            end
+            return changed  -- Skip other input processing
+        end
+        
+        -- Paste (Ctrl+V)
+        if input.IsButtonPressed(KEY_V) then
+            if menu.handlePaste(maxLength, preservePrefix) then
+                changed = true
+                menu.handleCharacterInput()  -- Handle word completion for pasted text
+            end
+            return changed  -- Skip other input processing
+        end
+    end
     
     -- Handle backspace with key repeat
     if input.IsButtonDown(KEY_BACKSPACE) then
@@ -1427,7 +1554,7 @@ function menu.handleInput(maxLength, preservePrefix)
             end
             
             if shouldProcess and not ctrlPressed then
-                local nextChar
+                local nextChar = menu.getCharacterCase(chars, shiftPressed)
                 if chars.normal:match("%a") then
                     local useUpperCase = (menu._inputState.capsLockEnabled and not shiftPressed) or 
                                        (not menu._inputState.capsLockEnabled and shiftPressed)
