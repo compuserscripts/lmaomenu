@@ -378,7 +378,17 @@ function Widget.new(type, config, window)
         inputBuffer = config.value or "",
         cursorPosition = #(config.value or ""),
         selectionStart = nil,
-        selectionEnd = nil
+        selectionEnd = nil,
+        -- Undo/redo specific state for each text input
+        undoState = {
+            undoStack = {},
+            redoStack = {},
+            maxSize = 100,
+            lastSavedState = nil,
+            lastUndoTime = 0,
+            lastRedoTime = 0,
+            lastRepeatTime = 0
+        }
     }
     return self
 end
@@ -447,23 +457,36 @@ end
 
 -- Save state function for undo/redo
 function menu.saveState()
+    -- Get active widget
+    local widget = menu._state.activeWidget
+    if not widget then return end
+    
+    -- Create current state snapshot
     local currentState = menu.createStateSnapshot()
     
     -- Don't save if nothing has changed
-    if menu._undoStack.lastSavedState and 
-       menu._undoStack.lastSavedState.buffer == currentState.buffer and
-       menu._undoStack.lastSavedState.cursorPos == currentState.cursorPos then
+    if widget.state.undoState.lastSavedState and 
+       widget.state.undoState.lastSavedState.buffer == currentState.buffer and
+       widget.state.undoState.lastSavedState.cursorPos == currentState.cursorPos then
         return
     end
     
-    table.insert(menu._undoStack.undoStack, currentState)
-    menu._undoStack.lastSavedState = currentState
-    menu._undoStack.redoStack = {}  -- Clear redo stack on new change
+    -- Add to widget's undo stack
+    table.insert(widget.state.undoState.undoStack, currentState)
+    widget.state.undoState.lastSavedState = currentState
+    widget.state.undoState.redoStack = {}  -- Clear redo stack on new change
     
     -- Maintain max stack size
-    while #menu._undoStack.undoStack > menu._undoStack.maxSize do
-        table.remove(menu._undoStack.undoStack, 1)
+    while #widget.state.undoState.undoStack > widget.state.undoState.maxSize do
+        table.remove(widget.state.undoState.undoStack, 1)
     end
+end
+
+function menu.applyState(state)
+    menu._inputState.inputBuffer = state.buffer
+    menu._inputState.cursorPosition = state.cursorPos
+    menu._inputState.selectionStart = state.selectionStart
+    menu._inputState.selectionEnd = state.selectionEnd
 end
 
 -- Caps Lock and case conversion helpers
@@ -901,13 +924,22 @@ function Window:renderTextInput(widget, x, y)
     local isHovered = isInBounds(x, y, x + config.width, y + config.height)
     local isActive = menu._state.activeWidget == widget
     
-    -- Initialize input state if needed
+    -- Initialize widget state if needed
     if not widget.state.inputBuffer then
         widget.state = {
             inputBuffer = config.value or "",
             cursorPosition = #(config.value or ""),
             selectionStart = nil,
-            selectionEnd = nil
+            selectionEnd = nil,
+            undoState = {
+                undoStack = {},
+                redoStack = {},
+                maxSize = 100,
+                lastSavedState = nil,
+                lastUndoTime = 0,
+                lastRedoTime = 0,
+                lastRepeatTime = 0
+            }
         }
     end
     
@@ -931,10 +963,18 @@ function Window:renderTextInput(widget, x, y)
     
     -- Handle focus/activation
     if isHovered and menu._mouseState.released and not menu._mouseState.eventHandled then
+        -- If a different widget was active, save its state
+        if menu._state.activeWidget and menu._state.activeWidget ~= widget then
+            menu._state.activeWidget.state.inputBuffer = menu._inputState.inputBuffer
+            menu._state.activeWidget.state.cursorPosition = menu._inputState.cursorPosition
+            menu._state.activeWidget.state.selectionStart = menu._inputState.selectionStart
+            menu._state.activeWidget.state.selectionEnd = menu._inputState.selectionEnd
+        end
+        
         menu._state.activeWidget = widget
         menu._mouseState.eventHandled = true
         
-        -- Update input state
+        -- Update menu input state from widget
         menu._inputState.inputBuffer = widget.state.inputBuffer
         menu._inputState.cursorPosition = widget.state.cursorPosition
         menu._inputState.selectionStart = widget.state.selectionStart
@@ -942,6 +982,7 @@ function Window:renderTextInput(widget, x, y)
     end
     
     -- Process input when active
+    local displayText = widget.state.inputBuffer
     if isActive then
         local changed = false
         if menu.handleInput(config.maxLength, config.preservePrefix) then
@@ -950,11 +991,19 @@ function Window:renderTextInput(widget, x, y)
             widget.state.cursorPosition = menu._inputState.cursorPosition
             widget.state.selectionStart = menu._inputState.selectionStart
             widget.state.selectionEnd = menu._inputState.selectionEnd
+            -- Use menu._inputState for display while active
+            displayText = menu._inputState.inputBuffer
             changed = true
         end
         
         -- Handle losing focus
         if input.IsButtonPressed(KEY_ESCAPE) or input.IsButtonPressed(KEY_ENTER) then
+            -- Save final state before losing focus
+            widget.state.inputBuffer = menu._inputState.inputBuffer
+            widget.state.cursorPosition = menu._inputState.cursorPosition
+            widget.state.selectionStart = menu._inputState.selectionStart
+            widget.state.selectionEnd = menu._inputState.selectionEnd
+            
             menu._state.activeWidget = nil
             menu.resetInputState()
             if changed and config.onChange then
@@ -968,8 +1017,7 @@ function Window:renderTextInput(widget, x, y)
     setColor(menu.colors.titleText)
     draw.Text(x + 5, labelY, config.text)
     
-    -- Prepare display text
-    local displayText = widget.state.inputBuffer
+    -- Apply password masking if needed
     if config.password then
         displayText = string.rep("*", #displayText)
     end
@@ -989,9 +1037,9 @@ function Window:renderTextInput(widget, x, y)
     -- Draw selection and cursor when active
     if isActive then
         -- Draw selection if exists
-        if widget.state.selectionStart and widget.state.selectionEnd then
-            local selStart = math.min(widget.state.selectionStart, widget.state.selectionEnd)
-            local selEnd = math.max(widget.state.selectionStart, widget.state.selectionEnd)
+        if menu._inputState.selectionStart and menu._inputState.selectionEnd then
+            local selStart = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
+            local selEnd = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
             
             local beforeSelText = displayText:sub(1, selStart)
             local selText = displayText:sub(selStart + 1, selEnd)
@@ -1010,7 +1058,7 @@ function Window:renderTextInput(widget, x, y)
         
         -- Draw cursor (blinking)
         if globals.RealTime() % 1 < 0.5 then
-            local beforeCursorText = displayText:sub(1, widget.state.cursorPosition)
+            local beforeCursorText = displayText:sub(1, menu._inputState.cursorPosition)
             local cursorX = math.floor(x + 5 + draw.GetTextSize(beforeCursorText))
             
             setColor(menu.colors.titleText)
@@ -1131,38 +1179,37 @@ function menu.handleInput(maxLength, preservePrefix)
         
         -- Undo (Ctrl+Z)
         if input.IsButtonDown(KEY_Z) then
+            local widget = menu._state.activeWidget
+            if not widget then return changed end
+            
             if not menu._inputState.lastKeyState[KEY_Z] then
                 -- Initial press
-                menu._undoStack.lastUndoTime = currentTime
-                menu._undoStack.lastRepeatTime = currentTime
+                widget.state.undoState.lastUndoTime = currentTime
+                widget.state.undoState.lastRepeatTime = currentTime
                 
-                if #menu._undoStack.undoStack > 0 then
+                if #widget.state.undoState.undoStack > 0 then
+                    -- Save current state to redo stack
                     local currentState = menu.createStateSnapshot()
-                    table.insert(menu._undoStack.redoStack, currentState)
+                    table.insert(widget.state.undoState.redoStack, currentState)
                     
-                    local prevState = table.remove(menu._undoStack.undoStack)
-                    menu._inputState.inputBuffer = prevState.buffer
-                    menu._inputState.cursorPosition = prevState.cursorPos
-                    menu._inputState.selectionStart = prevState.selectionStart
-                    menu._inputState.selectionEnd = prevState.selectionEnd
+                    -- Get and apply previous state
+                    local prevState = table.remove(widget.state.undoState.undoStack)
+                    menu.applyState(prevState)
                     changed = true
                 end
             else
                 -- Check for repeat
-                local timeHeld = currentTime - menu._undoStack.lastUndoTime
+                local timeHeld = currentTime - widget.state.undoState.lastUndoTime
                 if timeHeld >= menu.ARROW_KEY_DELAY then
-                    local timeSinceLastRepeat = currentTime - menu._undoStack.lastRepeatTime
+                    local timeSinceLastRepeat = currentTime - widget.state.undoState.lastRepeatTime
                     if timeSinceLastRepeat >= menu.ARROW_REPEAT_RATE then
-                        if #menu._undoStack.undoStack > 0 then
+                        if #widget.state.undoState.undoStack > 0 then
                             local currentState = menu.createStateSnapshot()
-                            table.insert(menu._undoStack.redoStack, currentState)
+                            table.insert(widget.state.undoState.redoStack, currentState)
                             
-                            local prevState = table.remove(menu._undoStack.undoStack)
-                            menu._inputState.inputBuffer = prevState.buffer
-                            menu._inputState.cursorPosition = prevState.cursorPos
-                            menu._inputState.selectionStart = prevState.selectionStart
-                            menu._inputState.selectionEnd = prevState.selectionEnd
-                            menu._undoStack.lastRepeatTime = currentTime
+                            local prevState = table.remove(widget.state.undoState.undoStack)
+                            menu.applyState(prevState)
+                            widget.state.undoState.lastRepeatTime = currentTime
                             changed = true
                         end
                     end
@@ -1175,36 +1222,39 @@ function menu.handleInput(maxLength, preservePrefix)
         
         -- Redo (Ctrl+Y)
         if input.IsButtonDown(KEY_Y) then
+            local widget = menu._state.activeWidget
+            if not widget then return changed end
+            
             if not menu._inputState.lastKeyState[KEY_Y] then
                 -- Initial press
-                menu._undoStack.lastRedoTime = currentTime
-                menu._undoStack.lastRepeatTime = currentTime
+                widget.state.undoState.lastRedoTime = currentTime
+                widget.state.undoState.lastRepeatTime = currentTime
                 
-                if #menu._undoStack.redoStack > 0 then
-                    local redoState = table.remove(menu._undoStack.redoStack)
-                    table.insert(menu._undoStack.undoStack, menu.createStateSnapshot())
+                if #widget.state.undoState.redoStack > 0 then
+                    -- Save current state to undo stack
+                    local currentState = menu.createStateSnapshot()
+                    table.insert(widget.state.undoState.undoStack, currentState)
                     
-                    menu._inputState.inputBuffer = redoState.buffer
-                    menu._inputState.cursorPosition = redoState.cursorPos
-                    menu._inputState.selectionStart = redoState.selectionStart
-                    menu._inputState.selectionEnd = redoState.selectionEnd
+                    -- Get and apply redo state
+                    local redoState = table.remove(widget.state.undoState.redoStack)
+                    menu.applyState(redoState)
                     changed = true
                 end
             else
                 -- Check for repeat
-                local timeHeld = currentTime - menu._undoStack.lastRedoTime
+                local timeHeld = currentTime - widget.state.undoState.lastRedoTime
                 if timeHeld >= menu.ARROW_KEY_DELAY then
-                    local timeSinceLastRepeat = currentTime - menu._undoStack.lastRepeatTime
+                    local timeSinceLastRepeat = currentTime - widget.state.undoState.lastRepeatTime
                     if timeSinceLastRepeat >= menu.ARROW_REPEAT_RATE then
-                        if #menu._undoStack.redoStack > 0 then
-                            local redoState = table.remove(menu._undoStack.redoStack)
-                            table.insert(menu._undoStack.undoStack, menu.createStateSnapshot())
+                        if #widget.state.undoState.redoStack > 0 then
+                            -- Save current state to undo stack
+                            local currentState = menu.createStateSnapshot()
+                            table.insert(widget.state.undoState.undoStack, currentState)
                             
-                            menu._inputState.inputBuffer = redoState.buffer
-                            menu._inputState.cursorPosition = redoState.cursorPos
-                            menu._inputState.selectionStart = redoState.selectionStart
-                            menu._inputState.selectionEnd = redoState.selectionEnd
-                            menu._undoStack.lastRepeatTime = currentTime
+                            -- Get and apply redo state
+                            local redoState = table.remove(widget.state.undoState.redoStack)
+                            menu.applyState(redoState)
+                            widget.state.undoState.lastRepeatTime = currentTime
                             changed = true
                         end
                     end
