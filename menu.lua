@@ -445,6 +445,43 @@ function menu.createStateSnapshot()
     }
 end
 
+-- Save state function for undo/redo
+function menu.saveState()
+    local currentState = menu.createStateSnapshot()
+    
+    -- Don't save if nothing has changed
+    if menu._undoStack.lastSavedState and 
+       menu._undoStack.lastSavedState.buffer == currentState.buffer and
+       menu._undoStack.lastSavedState.cursorPos == currentState.cursorPos then
+        return
+    end
+    
+    table.insert(menu._undoStack.undoStack, currentState)
+    menu._undoStack.lastSavedState = currentState
+    menu._undoStack.redoStack = {}  -- Clear redo stack on new change
+    
+    -- Maintain max stack size
+    while #menu._undoStack.undoStack > menu._undoStack.maxSize do
+        table.remove(menu._undoStack.undoStack, 1)
+    end
+end
+
+-- Caps Lock and case conversion helpers
+menu._inputState.capsLockEnabled = false
+menu._inputState.lastKeyStates = {}  -- Track all key states
+menu._inputState.keyRepeatStates = {}  -- Track key repeat states for clipboard operations
+
+-- Improved case conversion function
+function menu.getCharacterCase(chars, shiftPressed)
+    if chars.normal:match("%a") then  -- Only apply to letters
+        local useUpperCase = (menu._inputState.capsLockEnabled and not shiftPressed) or 
+                           (not menu._inputState.capsLockEnabled and shiftPressed)
+        return useUpperCase and chars.shift or chars.normal
+    end
+    -- For non-letters, just use shift state directly
+    return shiftPressed and chars.shift or chars.normal
+end
+
 function menu.getCurrentWord()
     local text = menu._inputState.inputBuffer
     local pos = menu._inputState.cursorPosition
@@ -1031,239 +1068,6 @@ function menu.handleCharacterInput()
     end
 end
 
-function menu.handleKeyboardInput()
-    local currentTime = globals.RealTime()
-    local ctrlPressed = input.IsButtonDown(KEY_LCONTROL) or input.IsButtonDown(KEY_RCONTROL)
-    local shiftPressed = input.IsButtonDown(KEY_LSHIFT) or input.IsButtonDown(KEY_RSHIFT)
-    local changed = false
-    
-    -- Handle special keys
-    if ctrlPressed then
-        -- Undo (Ctrl+Z)
-        if input.IsButtonPressed(KEY_Z) and not shiftPressed then
-            if #menu._undoStack.undoStack > 0 then
-                local state = table.remove(menu._undoStack.undoStack)
-                table.insert(menu._undoStack.redoStack, menu.createStateSnapshot())
-                menu._inputState.inputBuffer = state.buffer
-                menu._inputState.cursorPosition = state.cursorPos
-                menu._inputState.selectionStart = state.selectionStart
-                menu._inputState.selectionEnd = state.selectionEnd
-                changed = true
-            end
-        end
-        
-        -- Redo (Ctrl+Y or Ctrl+Shift+Z)
-        if (input.IsButtonPressed(KEY_Y) or (input.IsButtonPressed(KEY_Z) and shiftPressed)) then
-            if #menu._undoStack.redoStack > 0 then
-                local state = table.remove(menu._undoStack.redoStack)
-                table.insert(menu._undoStack.undoStack, menu.createStateSnapshot())
-                menu._inputState.inputBuffer = state.buffer
-                menu._inputState.cursorPosition = state.cursorPos
-                menu._inputState.selectionStart = state.selectionStart
-                menu._inputState.selectionEnd = state.selectionEnd
-                changed = true
-            end
-        end
-        
-        -- Copy (Ctrl+C)
-        if input.IsButtonPressed(KEY_C) then
-            if menu._inputState.selectionStart and menu._inputState.selectionEnd then
-                local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                menu._inputState.clipboard = menu._inputState.inputBuffer:sub(start + 1, finish)
-            end
-        end
-        
-        -- Cut (Ctrl+X)
-        if input.IsButtonPressed(KEY_X) then
-            if menu._inputState.selectionStart and menu._inputState.selectionEnd then
-                local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                menu._inputState.clipboard = menu._inputState.inputBuffer:sub(start + 1, finish)
-                menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, start) .. 
-                                            menu._inputState.inputBuffer:sub(finish + 1)
-                menu._inputState.cursorPosition = start
-                menu._inputState.selectionStart = nil
-                menu._inputState.selectionEnd = nil
-                changed = true
-            end
-        end
-        
-        -- Paste (Ctrl+V)
-        if input.IsButtonPressed(KEY_V) then
-            if menu._inputState.clipboard ~= "" then
-                if menu._inputState.selectionStart and menu._inputState.selectionEnd then
-                    local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                    local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-                    menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, start) .. 
-                                                menu._inputState.clipboard ..
-                                                menu._inputState.inputBuffer:sub(finish + 1)
-                    menu._inputState.cursorPosition = start + #menu._inputState.clipboard
-                    menu._inputState.selectionStart = nil
-                    menu._inputState.selectionEnd = nil
-                else
-                    local before = menu._inputState.inputBuffer:sub(1, menu._inputState.cursorPosition)
-                    local after = menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 1)
-                    menu._inputState.inputBuffer = before .. menu._inputState.clipboard .. after
-                    menu._inputState.cursorPosition = menu._inputState.cursorPosition + #menu._inputState.clipboard
-                end
-                changed = true
-            end
-        end
-        
-        -- Select All (Ctrl+A)
-        if input.IsButtonPressed(KEY_A) then
-            menu._inputState.selectionStart = 0
-            menu._inputState.selectionEnd = #menu._inputState.inputBuffer
-            menu._inputState.cursorPosition = menu._inputState.selectionEnd
-        end
-    end
-    
-    -- Handle Backspace
-    if input.IsButtonDown(KEY_BACKSPACE) then
-        if menu._inputState.selectionStart and menu._inputState.selectionEnd then
-            local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-            local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-            menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, start) .. 
-                                        menu._inputState.inputBuffer:sub(finish + 1)
-            menu._inputState.cursorPosition = start
-            menu._inputState.selectionStart = nil
-            menu._inputState.selectionEnd = nil
-            changed = true
-        elseif menu._inputState.cursorPosition > 0 then
-            menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, menu._inputState.cursorPosition - 1) .. 
-                                        menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 1)
-            menu._inputState.cursorPosition = menu._inputState.cursorPosition - 1
-            changed = true
-        end
-    end
-    
-    -- Handle Delete
-    if input.IsButtonPressed(KEY_DELETE) then
-        if menu._inputState.selectionStart and menu._inputState.selectionEnd then
-            local start = math.min(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-            local finish = math.max(menu._inputState.selectionStart, menu._inputState.selectionEnd)
-            menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, start) .. 
-                                        menu._inputState.inputBuffer:sub(finish + 1)
-            menu._inputState.cursorPosition = start
-            menu._inputState.selectionStart = nil
-            menu._inputState.selectionEnd = nil
-            changed = true
-        elseif menu._inputState.cursorPosition < #menu._inputState.inputBuffer then
-            menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, menu._inputState.cursorPosition) .. 
-                                        menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 2)
-            changed = true
-        end
-    end
-    
-    -- Handle arrow keys
-    if input.IsButtonDown(KEY_LEFT) then
-        if ctrlPressed then
-            -- Move by word
-            local pos = menu._inputState.cursorPosition
-            while pos > 0 and menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos, pos)) do
-                pos = pos - 1
-            end
-            while pos > 0 and not menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos - 1, pos - 1)) do
-                pos = pos - 1
-            end
-            if shiftPressed then
-                if not menu._inputState.selectionStart then
-                    menu._inputState.selectionStart = menu._inputState.cursorPosition
-                end
-                menu._inputState.selectionEnd = pos
-            else
-                menu._inputState.selectionStart = nil
-                menu._inputState.selectionEnd = nil
-            end
-            menu._inputState.cursorPosition = pos
-        else
-            -- Move by character
-            if menu._inputState.cursorPosition > 0 then
-                menu._inputState.cursorPosition = menu._inputState.cursorPosition - 1
-                if shiftPressed then
-                    if not menu._inputState.selectionStart then
-                        menu._inputState.selectionStart = menu._inputState.cursorPosition + 1
-                    end
-                    menu._inputState.selectionEnd = menu._inputState.cursorPosition
-                else
-                    menu._inputState.selectionStart = nil
-                    menu._inputState.selectionEnd = nil
-                end
-            end
-        end
-    end
-    
-    if input.IsButtonDown(KEY_RIGHT) then
-        if ctrlPressed then
-            -- Move by word
-            local pos = menu._inputState.cursorPosition
-            while pos < #menu._inputState.inputBuffer and 
-                  not menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos + 1, pos + 1)) do
-                pos = pos + 1
-            end
-            while pos < #menu._inputState.inputBuffer and 
-                  menu.isWordBoundary(menu._inputState.inputBuffer:sub(pos + 1, pos + 1)) do
-                pos = pos + 1
-            end
-            if shiftPressed then
-                if not menu._inputState.selectionStart then
-                    menu._inputState.selectionStart = menu._inputState.cursorPosition
-                end
-                menu._inputState.selectionEnd = pos
-            else
-                menu._inputState.selectionStart = nil
-                menu._inputState.selectionEnd = nil
-            end
-            menu._inputState.cursorPosition = pos
-        else
-            -- Move by character
-            if menu._inputState.cursorPosition < #menu._inputState.inputBuffer then
-                menu._inputState.cursorPosition = menu._inputState.cursorPosition + 1
-                if shiftPressed then
-                    if not menu._inputState.selectionStart then
-                        menu._inputState.selectionStart = menu._inputState.cursorPosition - 1
-                    end
-                    menu._inputState.selectionEnd = menu._inputState.cursorPosition
-                else
-                    menu._inputState.selectionStart = nil
-                    menu._inputState.selectionEnd = nil
-                end
-            end
-        end
-    end
-    
-    -- Handle Home key
-    if input.IsButtonPressed(KEY_HOME) then
-        if shiftPressed then
-            if not menu._inputState.selectionStart then
-                menu._inputState.selectionStart = menu._inputState.cursorPosition
-            end
-            menu._inputState.selectionEnd = 0
-        else
-            menu._inputState.selectionStart = nil
-            menu._inputState.selectionEnd = nil
-        end
-        menu._inputState.cursorPosition = 0
-    end
-    
-    -- Handle End key
-    if input.IsButtonPressed(KEY_END) then
-        if shiftPressed then
-            if not menu._inputState.selectionStart then
-                menu._inputState.selectionStart = menu._inputState.cursorPosition
-            end
-            menu._inputState.selectionEnd = #menu._inputState.inputBuffer
-        else
-            menu._inputState.selectionStart = nil
-            menu._inputState.selectionEnd = nil
-        end
-        menu._inputState.cursorPosition = #menu._inputState.inputBuffer
-    end
-    
-    return changed
-end
-
 function menu.handleInput(maxLength, preservePrefix)
     maxLength = maxLength or 1024
     preservePrefix = preservePrefix or false
@@ -1283,39 +1087,136 @@ function menu.handleInput(maxLength, preservePrefix)
     -- Track Shift state
     menu._inputState.lastShiftState = shiftPressed
     
-    -- Handle clipboard operations when Ctrl is pressed
+    -- Handle clipboard operations and undo/redo when Ctrl is pressed
     if ctrlPressed then
         -- Select All (Ctrl+A)
-        if input.IsButtonPressed(KEY_A) then
+        if input.IsButtonPressed(KEY_A) and not menu._inputState.lastKeyState[KEY_A] then
+            menu._inputState.lastKeyState[KEY_A] = true
             menu.handleSelectAll(preservePrefix)
+            menu.saveState()
             changed = true
-            return changed  -- Skip other input processing
+        elseif not input.IsButtonDown(KEY_A) then
+            menu._inputState.lastKeyState[KEY_A] = false
         end
         
         -- Copy (Ctrl+C)
-        if input.IsButtonPressed(KEY_C) then
+        if input.IsButtonPressed(KEY_C) and not menu._inputState.lastKeyState[KEY_C] then
+            menu._inputState.lastKeyState[KEY_C] = true
             menu.handleCopy()
-            return changed  -- Skip other input processing
+        elseif not input.IsButtonDown(KEY_C) then
+            menu._inputState.lastKeyState[KEY_C] = false
         end
         
         -- Cut (Ctrl+X)
-        if input.IsButtonPressed(KEY_X) then
+        if input.IsButtonPressed(KEY_X) and not menu._inputState.lastKeyState[KEY_X] then
+            menu._inputState.lastKeyState[KEY_X] = true
             if menu.handleCut(preservePrefix) then
+                menu.saveState()
                 changed = true
             end
-            return changed  -- Skip other input processing
+        elseif not input.IsButtonDown(KEY_X) then
+            menu._inputState.lastKeyState[KEY_X] = false
         end
         
         -- Paste (Ctrl+V)
-        if input.IsButtonPressed(KEY_V) then
+        if input.IsButtonPressed(KEY_V) and not menu._inputState.lastKeyState[KEY_V] then
+            menu._inputState.lastKeyState[KEY_V] = true
             if menu.handlePaste(maxLength, preservePrefix) then
+                menu.saveState()
                 changed = true
-                menu.handleCharacterInput()  -- Handle word completion for pasted text
             end
-            return changed  -- Skip other input processing
+        elseif not input.IsButtonDown(KEY_V) then
+            menu._inputState.lastKeyState[KEY_V] = false
+        end
+        
+        -- Undo (Ctrl+Z)
+        if input.IsButtonDown(KEY_Z) then
+            if not menu._inputState.lastKeyState[KEY_Z] then
+                -- Initial press
+                menu._undoStack.lastUndoTime = currentTime
+                menu._undoStack.lastRepeatTime = currentTime
+                
+                if #menu._undoStack.undoStack > 0 then
+                    local currentState = menu.createStateSnapshot()
+                    table.insert(menu._undoStack.redoStack, currentState)
+                    
+                    local prevState = table.remove(menu._undoStack.undoStack)
+                    menu._inputState.inputBuffer = prevState.buffer
+                    menu._inputState.cursorPosition = prevState.cursorPos
+                    menu._inputState.selectionStart = prevState.selectionStart
+                    menu._inputState.selectionEnd = prevState.selectionEnd
+                    changed = true
+                end
+            else
+                -- Check for repeat
+                local timeHeld = currentTime - menu._undoStack.lastUndoTime
+                if timeHeld >= menu.ARROW_KEY_DELAY then
+                    local timeSinceLastRepeat = currentTime - menu._undoStack.lastRepeatTime
+                    if timeSinceLastRepeat >= menu.ARROW_REPEAT_RATE then
+                        if #menu._undoStack.undoStack > 0 then
+                            local currentState = menu.createStateSnapshot()
+                            table.insert(menu._undoStack.redoStack, currentState)
+                            
+                            local prevState = table.remove(menu._undoStack.undoStack)
+                            menu._inputState.inputBuffer = prevState.buffer
+                            menu._inputState.cursorPosition = prevState.cursorPos
+                            menu._inputState.selectionStart = prevState.selectionStart
+                            menu._inputState.selectionEnd = prevState.selectionEnd
+                            menu._undoStack.lastRepeatTime = currentTime
+                            changed = true
+                        end
+                    end
+                end
+            end
+            menu._inputState.lastKeyState[KEY_Z] = true
+        else
+            menu._inputState.lastKeyState[KEY_Z] = false
+        end
+        
+        -- Redo (Ctrl+Y)
+        if input.IsButtonDown(KEY_Y) then
+            if not menu._inputState.lastKeyState[KEY_Y] then
+                -- Initial press
+                menu._undoStack.lastRedoTime = currentTime
+                menu._undoStack.lastRepeatTime = currentTime
+                
+                if #menu._undoStack.redoStack > 0 then
+                    local redoState = table.remove(menu._undoStack.redoStack)
+                    table.insert(menu._undoStack.undoStack, menu.createStateSnapshot())
+                    
+                    menu._inputState.inputBuffer = redoState.buffer
+                    menu._inputState.cursorPosition = redoState.cursorPos
+                    menu._inputState.selectionStart = redoState.selectionStart
+                    menu._inputState.selectionEnd = redoState.selectionEnd
+                    changed = true
+                end
+            else
+                -- Check for repeat
+                local timeHeld = currentTime - menu._undoStack.lastRedoTime
+                if timeHeld >= menu.ARROW_KEY_DELAY then
+                    local timeSinceLastRepeat = currentTime - menu._undoStack.lastRepeatTime
+                    if timeSinceLastRepeat >= menu.ARROW_REPEAT_RATE then
+                        if #menu._undoStack.redoStack > 0 then
+                            local redoState = table.remove(menu._undoStack.redoStack)
+                            table.insert(menu._undoStack.undoStack, menu.createStateSnapshot())
+                            
+                            menu._inputState.inputBuffer = redoState.buffer
+                            menu._inputState.cursorPosition = redoState.cursorPos
+                            menu._inputState.selectionStart = redoState.selectionStart
+                            menu._inputState.selectionEnd = redoState.selectionEnd
+                            menu._undoStack.lastRepeatTime = currentTime
+                            changed = true
+                        end
+                    end
+                end
+            end
+            menu._inputState.lastKeyState[KEY_Y] = true
+        else
+            menu._inputState.lastKeyState[KEY_Y] = false
         end
     end
     
+    -- Rest of your existing handleInput function from here...
     -- Handle backspace with key repeat
     if input.IsButtonDown(KEY_BACKSPACE) then
         if menu._inputState.selectionStart and menu._inputState.selectionEnd then
@@ -1331,6 +1232,7 @@ function menu.handleInput(maxLength, preservePrefix)
             menu._inputState.cursorPosition = start
             menu._inputState.selectionStart = nil
             menu._inputState.selectionEnd = nil
+            menu.saveState()
             changed = true
         else
             if not menu._inputState.lastKeyState[KEY_BACKSPACE] then
@@ -1339,6 +1241,7 @@ function menu.handleInput(maxLength, preservePrefix)
                     menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, menu._inputState.cursorPosition - 1) ..
                                                menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 1)
                     menu._inputState.cursorPosition = menu._inputState.cursorPosition - 1
+                    menu.saveState()
                     changed = true
                     menu._undoStack.lastBackspaceTime = currentTime
                 end
@@ -1350,6 +1253,7 @@ function menu.handleInput(maxLength, preservePrefix)
                             menu._inputState.inputBuffer = menu._inputState.inputBuffer:sub(1, menu._inputState.cursorPosition - 1) ..
                                                        menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 1)
                             menu._inputState.cursorPosition = menu._inputState.cursorPosition - 1
+                            menu.saveState()
                             changed = true
                             menu._undoStack.lastKeyTime = currentTime
                         end
@@ -1362,7 +1266,7 @@ function menu.handleInput(maxLength, preservePrefix)
         menu._inputState.lastKeyState[KEY_BACKSPACE] = false
     end
 
-    -- Handle arrow key navigation with and without Ctrl
+    -- Keep your existing Ctrl+Arrow and regular arrow navigation code here unchanged
     if ctrlPressed then
         -- For Ctrl+Arrow, only move on fresh key press, not hold
         if not menu._inputState.lastKeyState[KEY_LEFT] and input.IsButtonDown(KEY_LEFT) then
@@ -1431,7 +1335,7 @@ function menu.handleInput(maxLength, preservePrefix)
             menu._inputState.lastKeyState[KEY_RIGHT] = false
         end
     else
-        -- Regular arrow key navigation (without Ctrl)
+        -- Keep your existing regular arrow key navigation code here unchanged
         if input.IsButtonDown(KEY_LEFT) then
             local minPos = preservePrefix and 1 or 0
             
@@ -1554,7 +1458,7 @@ function menu.handleInput(maxLength, preservePrefix)
             end
             
             if shouldProcess and not ctrlPressed then
-                local nextChar = menu.getCharacterCase(chars, shiftPressed)
+                local nextChar
                 if chars.normal:match("%a") then
                     local useUpperCase = (menu._inputState.capsLockEnabled and not shiftPressed) or 
                                        (not menu._inputState.capsLockEnabled and shiftPressed)
@@ -1576,6 +1480,7 @@ function menu.handleInput(maxLength, preservePrefix)
                         menu._inputState.cursorPosition = start + #nextChar
                         menu._inputState.selectionStart = nil
                         menu._inputState.selectionEnd = nil
+                        menu.saveState()
                         changed = true
                     end
                 else
@@ -1584,6 +1489,7 @@ function menu.handleInput(maxLength, preservePrefix)
                         local after = menu._inputState.inputBuffer:sub(menu._inputState.cursorPosition + 1)
                         menu._inputState.inputBuffer = before .. nextChar .. after
                         menu._inputState.cursorPosition = menu._inputState.cursorPosition + #nextChar
+                        menu.saveState()
                         changed = true
                         
                         menu.handleCharacterInput()
